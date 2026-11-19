@@ -1,0 +1,6 @@
+# Dependensi KHUSUS transkrip audio SCORM.
+# Bot memanggilnya dengan Python 3.12 lewat perintah: py -3.12
+# Install dengan: py -3.12 -m pip install -r requirements-audio.txt
+# Semua berjalan lokal, tanpa API eksternal.
+faster-whisper==1.2.1
+av==15.1.0

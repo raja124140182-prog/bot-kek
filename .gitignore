@@ -1,0 +1,14 @@
+# JANGAN pernah mengunggah sesi login/token pengguna.
+BrowserProfile/
+
+# Cache audio besar dan hasil transkrip lokal (~41 MB).
+AudioCache/
+
+# File lokal & sementara.
+__pycache__/
+*.pyc
+log-modul.txt
+konfigurasi.json
+*.log
+ss-pikirkan-*/
+ss-kolab-*/
