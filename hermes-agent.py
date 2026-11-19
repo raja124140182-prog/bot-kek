@@ -2628,10 +2628,12 @@ def _selesaikan_scorm(page):
             return frame.evaluate("""() => Array.from(document.querySelectorAll('input.acc-radio'))
                 .filter(r => !r.disabled)
                 .map(r => {
-                    const id = r.id.replace(/^acc-/, '');
-                    const lab = Array.from(document.querySelectorAll('.acc-text'))
+                    const ref = r.getAttribute('aria-labelledby');
+                    const lab = ref ? document.getElementById(ref) : null;
+                    const baru = lab ? (lab.innerText || lab.textContent || '').trim() : '';
+                    const lama = [...document.querySelectorAll('.acc-text')]
                         .find(e => (e.dataset.represents || '').includes(id));
-                    return lab ? (lab.innerText || '').trim() : '';
+                    return baru || (lama ? (lama.innerText || '').trim() : '');
                 }).filter(Boolean)""")
         except Exception:
             return []
@@ -3009,9 +3011,16 @@ def _selesaikan_scorm(page):
             radio_info = frame.evaluate("""() => Array.from(document.querySelectorAll('input.acc-radio'))
                 .filter(r => !r.disabled)
                 .map(r => { const id = r.id.replace(/^acc-/, '');
-                            const lab = [...document.querySelectorAll('.acc-text')]
+                            const ref = r.getAttribute('aria-labelledby');
+                            const lab = ref ? document.getElementById(ref) : null;
+                            const alt = lab ? (lab.innerText || lab.textContent || '').trim() : '';
+                            const lama = [...document.querySelectorAll('.acc-text')]
                                 .find(e => (e.dataset.represents || '').includes(id));
-                            return {id: id, teks: lab ? (lab.innerText || '').trim() : ''}; })""")
+                            const cadangan = [...document.querySelectorAll('label')]
+                                .find(e => (e.id || '').toLowerCase().includes(id.toLowerCase()));
+                            return {id: id,
+                                    teks: alt || (lama ? (lama.innerText || '').trim() : '') ||
+                                          (cadangan ? (cadangan.innerText || cadangan.textContent || '').trim() : '')}; })""")
             sidik_radio = "|".join(sorted(i["id"] for i in radio_info))
             # Kirim bisa tetap aktif setelah jawaban terkirim. Tanpa penanda
             # ini bot mengirim ulang radio yang sama berulang kali.
@@ -3045,6 +3054,26 @@ def _selesaikan_scorm(page):
                           "opsi pertama dipakai (terpaksa, dicatat)", flush=True)
                     jawab = str(radio_info[0]["id"])
                 jawab = str(jawab)
+                # data.js kadang hanya berisi daftar opsi tanpa penanda 'correct'.
+                # Saat itu jawab berupa teks; petakan ke radio lewat teks <label>
+                # (bukan .acc-text yang kosong) memakai pencocokan mirip.
+                if not jawab_id and radio_info:
+                    _norm = lambda s: re.sub(r"\s+", " ", str(s or "")).strip().lower()
+                    target = _norm(jawab)
+                    jawab_id = next((i["id"] for i in radio_info
+                                     if _normal_id(i["id"]) == _normal_id(jawab)), None)
+                    if not jawab_id:
+                        terbaik = max(
+                            radio_info,
+                            key=lambda i: difflib.SequenceMatcher(
+                                None, target, _norm(i["teks"])).ratio())
+                        rasio = difflib.SequenceMatcher(
+                            None, target, _norm(terbaik["teks"])).ratio()
+                        if rasio >= 0.30:
+                            jawab_id = terbaik["id"]
+                            jawab = terbaik["teks"] or jawab
+                            _log_pilih("label radio (data.js tanpa kunci)", jawab,
+                                       f" id={jawab_id} mirip={rasio:.2f}")
                 sudah_coba = set()  # opsi radio yang sudah diuji; rotasi tak boleh mengulang
                 for percobaan in range(len(radio_info) + 1):
                     sudah_coba.add(jawab_id or jawab)
@@ -3056,16 +3085,16 @@ def _selesaikan_scorm(page):
                         }""", jawab_id)
                     else:
                         frame.evaluate("""(j) => {
-                            const t = Array.from(document.querySelectorAll('.acc-text'))
-                                .find(e => (e.innerText || '').trim() === j);
-                            if (t) t.click();
-                            const r = Array.from(document.querySelectorAll('input.acc-radio')).find(x => {
-                                const id = x.id.replace(/^acc-/, '');
-                                const lab = Array.from(document.querySelectorAll('.acc-text'))
-                                    .find(e => (e.dataset.represents || '').includes(id));
-                                return lab && (lab.innerText || '').trim() === j;
-                            });
-                            if (r) r.click();
+                            const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                            const target = norm(j);
+                            const r = Array.from(document.querySelectorAll('input.acc-radio'))
+                                .find(x => {
+                                    const ref = x.getAttribute('aria-labelledby');
+                                    const lab = ref ? document.getElementById(ref) : null;
+                                    return norm(lab ? (lab.innerText || lab.textContent) : '') === target;
+                                });
+                            if (r) { r.click(); return true; }
+                            return false;
                         }""", jawab)
                     time.sleep(0.6)
                     ss("sudah-pilih-" + re.sub(r"\W+", "", jawab)[:20])

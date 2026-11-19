@@ -208,6 +208,12 @@ Untuk pelajaran yang isinya berupa aplikasi interaktif SCORM (iframe bersarang
     kotak yang belum dijawab muncul lagi, lalu memilih kotak berikutnya.
     Sebelumnya flag `perlu_kembali` tidak pernah aktif, sehingga bot hanya
     menjawab satu soal lalu maju 120 slide dan berakhir dengan status `inProgress`.
+15. **Radio tanpa kunci data.js** - pada soal seperti `174216`, `data.js` hanya
+    berisi daftar opsi tanpa penanda `correct`, dan teks opsi tersimpan di
+    `<label>` yang ditunjuk `aria-labelledby` (bukan di `.acc-text`). Bot kini
+    membaca label itu, memilih jawaban logis dari peta transkrip, lalu memetakannya
+    ke ID radio dengan pencocokan teks. Sebelumnya radio tidak pernah tercentang
+    sehingga Kirim selalu ditolak dan bot maju 120 slide tanpa jawaban.
 14. **Tombol Jeda/Lanjut** - jendela mini punya tombol Jeda yang menahan bot di
     semua loop utama (SCORM, LTI, tiap aktivitas, dan tiap modul), supaya browser
     bisa dipakai sendiri. Klik Lanjut untuk melanjutkan. Saat dijeda jendela tidak
