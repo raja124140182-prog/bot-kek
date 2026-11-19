@@ -3366,13 +3366,22 @@ def _selesaikan_scorm(page):
                         ss("pickmany-tombol-sesudah-kirim")
                         status_tombol = _status_jawaban_scorm(frame, transkrip)
                         api_tombol = _cek_api_tombol()
+                        # API bisa terlambat update; polling singkat agar sukses
+                        # (status None tapi API completed) tidak terlewat.
+                        if not api_tombol and status_tombol is not True:
+                            for _ in range(4):
+                                time.sleep(1.5)
+                                frame = _frame_scorm(page) or frame
+                                status_tombol = _status_jawaban_scorm(frame, transkrip)
+                                api_tombol = _cek_api_tombol()
+                                if api_tombol or status_tombol is True:
+                                    break
                         dijawab.add(kid)
                         interaksi += 1
                         maju_tanpa_jawaban = 0
                         perlu_kembali = bool(box_terakhir)
                         if api_tombol or status_tombol is True:
                             break
-                        if (status_tombol is False or not api_tombol) and PEMILIH_KEDUA:
                             ulangan += 1
                             # Jawaban ditolak: coba kombinasi lain. Setelah "Coba lagi"
                             # pilihan biasanya direset, jadi setiap percobaan klik ulang
@@ -3416,8 +3425,16 @@ def _selesaikan_scorm(page):
                                 time.sleep(2.5)
                                 frame = _frame_scorm(page) or frame
                                 ss("pickmany-tombol-sesudah-kirim")
-                                if (_cek_api_tombol() or
-                                        _status_jawaban_scorm(frame, transkrip) is True):
+                                _ok = _cek_api_tombol() or _status_jawaban_scorm(frame, transkrip) is True
+                                if not _ok:
+                                    for _ in range(4):
+                                        time.sleep(1.5)
+                                        frame = _frame_scorm(page) or frame
+                                        if (_cek_api_tombol() or
+                                                _status_jawaban_scorm(frame, transkrip) is True):
+                                            _ok = True
+                                            break
+                                if _ok:
                                     break
                         break
 
