@@ -201,7 +201,12 @@ Untuk pelajaran yang isinya berupa aplikasi interaktif SCORM (iframe bersarang
     urutan `OptN`, atau teks; klik dilakukan pada elemen dan pembayang teksnya.
     Jika jawaban salah, indeks pilihan digeser beberapa kali. Dengan ini soal
     format baru tidak langsung membuat bot maju 120 slide tanpa jawaban.
-11. **Video dan tombol Keluar** — video diputar wajar pada 2 detik terakhir
+13. **Kembali ke daftar karakter** - pada SCORM yang memakai menu kotak
+    (`Rectangle N`), setelah satu soal dijawab bot mundur lewat `#prev` sampai
+    kotak yang belum dijawab muncul lagi, lalu memilih kotak berikutnya.
+    Sebelumnya flag `perlu_kembali` tidak pernah aktif, sehingga bot hanya
+    menjawab satu soal lalu maju 120 slide dan berakhir dengan status `inProgress`.
+11. **Video dan tombol Keluar** - video diputar wajar pada 2 detik terakhir
     supaya event `ended` benar-benar terjadi. Pencarian tombol Keluar juga
     membaca `aria-label`/`title` dan alias `Exit/Close/Tutup/Kembali/Back`.
     Bila tombol Keluar tidak ada, bot melanjutkan lewat alur SCORM sampai

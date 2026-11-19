@@ -2903,6 +2903,7 @@ def _selesaikan_scorm(page):
                 else:
                     ulangan += 1
                 interaksi += 1
+                perlu_kembali = bool(box_terakhir)
                 continue
 
             # Pick Many: centang SEMUA opsi yang benar memakai kunci data.js.
@@ -2969,6 +2970,7 @@ def _selesaikan_scorm(page):
                         ulangan += 1
                     dijawab.add(inter.get("id"))
                     interaksi += 1
+                    perlu_kembali = bool(box_terakhir)
                     continue
 
             # Kuis pilihan: klik RADIO berdasarkan ID dari kunci data.js.
@@ -3089,7 +3091,7 @@ def _selesaikan_scorm(page):
                         continue
                     break
                 radio_selesai.add(sidik_radio)
-                perlu_kembali = False
+                perlu_kembali = bool(box_terakhir)
                 maju_tanpa_jawaban = 0
                 interaksi += 1
                 continue
@@ -3162,6 +3164,7 @@ def _selesaikan_scorm(page):
                         dijawab.add(k.get("id"))
                         interaksi += 1
                         maju_tanpa_jawaban = 0
+                        perlu_kembali = bool(box_terakhir)
                         if status_tombol is False and not api_tombol:
                             ulangan += 1
                             # Kunci bisa basi: geser satu posisi, coba lagi sekali.
@@ -3250,6 +3253,7 @@ def _selesaikan_scorm(page):
                         dijawab.add(k.get("id"))
                         interaksi += 1
                         maju_tanpa_jawaban = 0
+                        perlu_kembali = bool(box_terakhir)
                         if api_g or status_g is True:
                             break
                         if status_g is False or not api_g:
@@ -3299,6 +3303,7 @@ def _selesaikan_scorm(page):
                     if (k) k.click();
                 }""")
                 interaksi += 1
+                perlu_kembali = bool(box_terakhir)
                 time.sleep(1.5)
                 ss("sesudah-isi-kolom")
                 continue
@@ -3354,12 +3359,41 @@ def _selesaikan_scorm(page):
             # lalu pilih kotak lain yang belum dijawab.
             if perlu_kembali:
                 ss("kembali-ke-pilihan-karakter")
-                frame.evaluate("""() => {
-                    const p = document.querySelector('#prev');
-                    if (p) p.click();
-                }""")
+                # Satu '#prev' sering tidak cukup karena ada slide umpan balik
+                # di antara soal dan daftar karakter. Mundur sampai kotak yang
+                # belum dijawab muncul lagi (maksimal 6 langkah).
+                for _ in range(6):
+                    frame = _frame_scorm(page) or frame
+                    kotak_kembali = frame.evaluate("""() =>
+                        [...document.querySelectorAll('.acc-button')]
+                          .filter(x => /^Rectangle \\d+$/.test(
+                              x.getAttribute('aria-label') || '') &&
+                              x.getBoundingClientRect().width > 0)
+                          .map(x => x.dataset.represents || x.id)""")
+                    try:
+                        lbl_kembali = frame.evaluate(
+                            "() => (document.querySelector('#slide-label')||{}).innerText || ''")
+                        txt_kembali = " ".join(frame.inner_text("body").split())[:180]
+                    except Exception:
+                        lbl_kembali, txt_kembali = "", ""
+                    sidik_kembali = lbl_kembali + "|" + txt_kembali
+                    sudah_kembali = box_selesai.get(sidik_kembali, set())
+                    if kotak_kembali and any(
+                            uid not in sudah_kembali for uid in kotak_kembali):
+                        break
+                    if not frame.evaluate("""() => {
+                        const p = document.querySelector('#prev');
+                        if (!p || p.disabled) return false;
+                        p.click();
+                        return true;
+                    }"""):
+                        break
+                    time.sleep(0.8)
+                else:
+                    # Semua kotak sudah dijawab; tidak perlu mundur lagi.
+                    box_terakhir = None
                 perlu_kembali = False
-                time.sleep(1.2)
+                maju_tanpa_jawaban = 0
                 continue
 
             # Semua kotak di slide ini sudah dikerjakan -> lanjut slide berikutnya
