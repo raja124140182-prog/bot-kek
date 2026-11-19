@@ -20,11 +20,12 @@ dependensi dan login sendiri**. Ikuti langkah ini:
    Hapus/rename folder `BrowserProfile\` supaya profil baru dibuat.
    **Jangan pernah mengirim `BrowserProfile\` ke orang lain** karena di dalamnya
    tersimpan sesi login dan token Anda. Setiap orang login manual.
-4. **Jalankan** `Jalankan-Bot-Modul.bat` (atau shortcut *Hermes Bot - Jalankan Modul*
-   di Desktop; sama dengan `python jalankan-modul.py`). Browser akan terbuka;
+4. **Klik shortcut** *Hermes Bot - Jalankan Modul* di Desktop (sama dengan
+   `Jalankan-Bot-Modul.bat`). Klik pertama menjalankan bot; **klik lagi menghentikan**
+   proses bot beserta browser turunannya. Saat dijalankan, browser akan terbuka;
    jika muncul halaman login, login **sendiri** di jendela itu. Bot menunggu
    sampai sesi terdeteksi (maksimal 10 menit), lalu lanjut otomatis. Jangan tutup
-   browser dan jangan jalankan dua proses bersamaan (satu profil = satu proses).
+   browser manual saat bot berjalan.
 5. **Pantau** lewat jendela mini dan `log-modul.txt`. Screenshot sementara dihapus
    otomatis setelah pekerjaan selesai. Aktivitas unggah video/file dan
    `mod/feedback/` sengaja dilewati dan dicatat di log.
@@ -313,7 +314,8 @@ Perintah khusus: `keluar` = tutup bot, `/reset` = mulai chat baru.
 ## File dalam Folder Ini
 - `Chat-Hermes.bat` — launcher chat biasa (offline)
 - `Chat-Hermes-Plus.bat` - launcher asisten kuliah (butuh internet saat mencari)
-- `Jalankan-Bot-Modul.bat` - launcher sekali klik untuk menjalankan semua modul
+- `Jalankan-Bot-Modul.bat` - launcher sekali klik: klik untuk jalankan, klik lagi untuk hentikan
+- `toggle-bot.ps1` - logika toggle (matikan proses bot + bersihkan kunci profil browser)
 - `hermes-agent.py` - otak asisten kuliah (bisa diedit/dikembangkan)
 - `jalankan-modul.py` - launcher portable untuk mengerjakan semua modul (baca `konfigurasi.json`)
 - `konfigurasi.contoh.json` - template konfigurasi (salin ke `konfigurasi.json`)
