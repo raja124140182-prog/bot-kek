@@ -3382,6 +3382,7 @@ def _selesaikan_scorm(page):
                         perlu_kembali = bool(box_terakhir)
                         if api_tombol or status_tombol is True:
                             break
+                        if (status_tombol is False or not api_tombol) and PEMILIH_KEDUA:
                             ulangan += 1
                             # Jawaban ditolak: coba kombinasi lain. Setelah "Coba lagi"
                             # pilihan biasanya direset, jadi setiap percobaan klik ulang
@@ -3437,6 +3438,7 @@ def _selesaikan_scorm(page):
                                 if _ok:
                                     break
                         break
+
 
             # Jalur adaptif terakhir: deteksi opsi dari bentuk DOM apa pun.
             # Hanya dipakai bila jalur khusus tidak menemukan opsi, tapi teks
