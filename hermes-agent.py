@@ -49,6 +49,24 @@ FOLDER_SIMPAN = Path.home() / "Documents" / "Hermes"
 SKEMA_KASUS = FOLDER_SIMPAN / "SkemaKasus.json"
 PETA_TRANSKRIP = FOLDER_SIMPAN / "PetaTranskrip.json"
 LOG_MODUL = Path(__file__).resolve().parent / "log-modul.txt"
+KONFIGURASI_BOT = Path(__file__).resolve().parent / "konfigurasi.json"
+
+
+def _muat_konfigurasi_bot():
+    """Baca konfigurasi bot lokal. Gagal baca tidak boleh menghentikan bot."""
+    try:
+        return json.loads(KONFIGURASI_BOT.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_CFG_BOT = _muat_konfigurasi_bot()
+# Pemilih kedua = perbaikan adaptif (label radio, pick-many tombol tanpa kunci,
+# deteksi opsi pendek, pemilihan model saat data.js kosong). Default aktif agar
+# kasus seperti 174223/174225 bisa diselesaikan; set false untuk kembali ke
+# perilaku awal GitHub.
+PEMILIH_KEDUA = bool(_CFG_BOT.get("pemilih_kedua", True))
+
 _RIWAYAT_PILIH = {}
 _KATA_STOP = {
     "yang", "dan", "dengan", "untuk", "dari", "pada", "ini", "itu", "atau",
@@ -2414,6 +2432,78 @@ def _pilih_opsi_scorm(teks_soal, opsi, transkrip):
     return opsi[0]
 
 
+def _pilih_beberapa_opsi_scorm(teks_soal, opsi, transkrip, jumlah):
+    """Pilih beberapa opsi sekaligus saat data.js tidak punya kunci benar.
+
+    Dipakai soal "Pilih dua jawaban yang tepat" yang hanya memakai tombol
+    Storyline (tanpa input radio/checkbox). Model lokal tetap memilih berdasar
+    prinsip positif + fakta kasus, bukan hafalan pasangan soal-jawaban.
+    """
+    opsi = [str(o or "").strip() for o in (opsi or []) if str(o or "").strip()]
+    if not opsi:
+        return []
+    jumlah = max(1, min(int(jumlah or 1), len(opsi)))
+    if jumlah == 1:
+        jawab = _pilih_opsi_scorm(teks_soal, opsi, transkrip)
+        return [jawab] if jawab else []
+
+    peta = _bangun_peta_transkrip(transkrip)
+    kata_soal = set(re.findall(r"[a-z]{4,}", (teks_soal or "").lower())) - _KATA_STOP
+    prinsip = []
+    for e in peta:
+        if not e.get("positif"):
+            continue
+        kata = set(e.get("kata") or [])
+        if any(_kata_cocok(k, q) for k in kata for q in kata_soal):
+            prinsip.append(str(e.get("prinsip") or "")[:200])
+    daftar = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(opsi))
+    pesan = [
+        {"role": "system", "content":
+            "Kamu menjawab kuis pelatihan Wadhwani. Pilih TEPAT sejumlah opsi "
+            "yang diminta berdasarkan prinsip positif dan fakta pada kasus, "
+            "bukan hafalan pasangan soal-jawaban. Balas HANYA teks opsi yang "
+            "dipilih, dipisah dengan tanda ' | ', tanpa nomor dan penjelasan."},
+        {"role": "user", "content":
+            f"PRINSIP positif yang relevan:\n" +
+            ("\n".join(f"- {p}" for p in prinsip[:12]) or
+             "- (tidak ada prinsip khusus; gunakan logika dan fakta kasus)") +
+            f"\n\nKasus di slide:\n{(teks_soal or '')[-1500:]}\n\n"
+            f"Pilih tepat {jumlah} opsi dari daftar ini:\n{daftar}"},
+    ]
+    indeks = []
+    try:
+        jawab = panggil_model(pesan)
+        for bagian in re.split(r"\s*\|\s*|\n+", jawab or ""):
+            potong = re.sub(r"^\s*\d+[\.\)]\s*", "", bagian).strip()
+            if not potong:
+                continue
+            rasio, i = max((difflib.SequenceMatcher(
+                None, potong.lower(), o.lower()).ratio(), n)
+                for n, o in enumerate(opsi))
+            if rasio >= 0.35 and i not in indeks:
+                indeks.append(i)
+    except Exception as e:
+        _log_pilih("model multi gagal", str(e)[:80])
+
+    if len(indeks) < jumlah:
+        def dukungan(o):
+            kata_opsi = set(re.findall(r"[a-z]{4,}", o.lower())) - _KATA_STOP
+            return sum(1 for p in prinsip
+                       if any(_kata_cocok(k, kk)
+                              for k in kata_opsi
+                              for kk in set(re.findall(r"[a-z]{4,}", p.lower())) - _KATA_STOP))
+        for i in sorted(range(len(opsi)), key=lambda n: dukungan(opsi[n]), reverse=True):
+            if i not in indeks:
+                indeks.append(i)
+            if len(indeks) >= jumlah:
+                break
+    indeks = indeks[:jumlah]
+    pilihan = [opsi[i] for i in indeks]
+    _log_pilih(f"model multi ({jumlah} opsi, data.js tanpa kunci)",
+               ", ".join(pilihan))
+    return pilihan
+
+
 def _status_jawaban_scorm(frame, transkrip):
     """Nilai umpan balik setelah Kirim dari audio + teks layar.
 
@@ -3169,9 +3259,9 @@ def _selesaikan_scorm(page):
                 continue
 
             # Pick Many berbasis tombol Storyline (bukan input.acc-checkbox).
-            # Teks opsi ada di .acc-text, sedangkan tombol pilihannya bertanda
-            # acc-<uid> dan labelnya 'Rectangle N'/'Oval N' (mis. 174117 Think 3).
-            # Kunci data.js memakai 'Opt1'..'OptN', jadi dipetakan ke urutan opsi.
+            # Primer: kunci data.js (perilaku awal). Sekunder (PEMILIH_KEDUA):
+            # deteksi jumlah opsi yang diminta + pemilihan model lokal saat kunci
+            # kosong/tidak cocok, untuk kasus seperti 174223/174225/174227.
             opsi_tombol = []
             if not cek_info and not radio_info:
                 opsi_tombol = frame.evaluate(r"""() => {
@@ -3185,28 +3275,76 @@ def _selesaikan_scorm(page):
                         if (!uid) continue;
                         const t = teksSemua.find(e =>
                             (e.dataset.represents||'').includes(uid) &&
-                            (e.innerText||'').trim().length > 20 &&
-                            !/©|All Rights|slide:|Hak Cipta/i.test(e.innerText||''));
+                            (e.innerText||'').trim().length > 6 &&
+                            !/All Rights|Hak Cipta|slide:|Sisa Percobaan|Silahkan klik/i.test(
+                                e.innerText||''));
                         if (t) hasil.push({uid: uid,
                             teks: (t.innerText||'').replace(/\s+/g,' ').trim()});
                     }
                     return hasil;
                 }""") or []
                 if opsi_tombol:
-                    kandidat_tombol = [
-                        k for k in kunci
-                        if k.get("type") in ("multipleresponse", "multiplechoice")
-                        and k.get("benar") and k.get("id") not in dijawab]
-                    for k in kandidat_tombol:
-                        angka = lambda v: int(re.sub(r"\D", "", str(v)) or 0)
+                    jumlah = 1
+                    m_jumlah = re.search(
+                        r"pilih\s+(dua|tiga|empat|lima|2|3|4|5)\b",
+                        teks_dom, re.I)
+                    if m_jumlah:
+                        jumlah = {"dua": 2, "tiga": 3, "empat": 4, "lima": 5}.get(
+                            m_jumlah.group(1).lower(),
+                            int(re.sub(r"\D", "", m_jumlah.group(1)) or 1))
+                    elif re.search(r"pilih\s+(beberapa|yang tepat|opsi yang)", teks_dom, re.I):
+                        jumlah = 2
+                    jumlah = max(1, min(jumlah, len(opsi_tombol)))
+
+                    angka = lambda v: int(re.sub(r"\D", "", str(v)) or 0)
+                    rencana = []
+                    # Pilihan pertama: kunci data.js (perilaku awal GitHub).
+                    for k in kunci:
+                        if (k.get("type") not in ("multipleresponse", "multiplechoice")
+                                or not k.get("benar") or k.get("id") in dijawab):
+                            continue
                         indeks = [angka(v) - 1 for v in k.get("benar", [])]
                         indeks = [i for i in indeks if 0 <= i < len(opsi_tombol)]
-                        if not indeks:
-                            continue
+                        if indeks and indeks not in [r[0] for r in rencana]:
+                            rencana.append((indeks, "kunci data.js", k.get("id")))
+                    # Pilihan kedua: model + peta transkrip saat kunci tidak ada.
+                    if not rencana and PEMILIH_KEDUA:
+                        pilihan_model = _pilih_beberapa_opsi_scorm(
+                            teks, [o["teks"] for o in opsi_tombol], transkrip, jumlah)
+                        indeks = [i for i, o in enumerate(opsi_tombol)
+                                  if o["teks"] in pilihan_model]
+                        if len(indeks) < jumlah and pilihan_model:
+                            norm = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
+                            for p in pilihan_model:
+                                i = next((n for n, o in enumerate(opsi_tombol)
+                                          if norm(o["teks"]) == norm(p)), None)
+                                if i is None:
+                                    try:
+                                        i = max(range(len(opsi_tombol)),
+                                                key=lambda n: difflib.SequenceMatcher(
+                                                    None, norm(p), norm(opsi_tombol[n]["teks"])).ratio())
+                                    except Exception:
+                                        i = None
+                                if i is not None and i not in indeks:
+                                    indeks.append(i)
+                        indeks = indeks[:jumlah]
+                        if indeks:
+                            rencana.append((indeks, "model + peta transkrip (pemilih kedua)",
+                                            f"pickmany-{jumlah}"))
+
+                    def _cek_api_tombol():
+                        try:
+                            mm = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
+                            return bool(mm) and _selesai_aktivitas(
+                                _status_aktivitas_api(page, mm.group(1)))
+                        except Exception:
+                            return False
+
+                    for indeks, sumber, kid in rencana:
                         ss("pickmany-tombol-sebelum")
                         print(datetime.now().strftime("%H:%M:%S") +
                               f" [SCORM] Pick Many tombol: {len(opsi_tombol)} opsi, "
-                              f"kunci -> {[opsi_tombol[i]['teks'][:50] for i in indeks]}",
+                              f"{sumber} -> {[opsi_tombol[i]['teks'][:50] for i in indeks]}",
                               flush=True)
                         for i in indeks:
                             frame.evaluate("""(uid) => {
@@ -3227,24 +3365,41 @@ def _selesaikan_scorm(page):
                         frame = _frame_scorm(page) or frame
                         ss("pickmany-tombol-sesudah-kirim")
                         status_tombol = _status_jawaban_scorm(frame, transkrip)
-                        try:
-                            m_inst = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
-                            api_tombol = bool(m_inst) and _selesai_aktivitas(
-                                _status_aktivitas_api(page, m_inst.group(1)))
-                        except Exception:
-                            api_tombol = False
-                        dijawab.add(k.get("id"))
+                        api_tombol = _cek_api_tombol()
+                        dijawab.add(kid)
                         interaksi += 1
                         maju_tanpa_jawaban = 0
                         perlu_kembali = bool(box_terakhir)
-                        if status_tombol is False and not api_tombol:
+                        if api_tombol or status_tombol is True:
+                            break
+                        if (status_tombol is False or not api_tombol) and PEMILIH_KEDUA:
                             ulangan += 1
-                            # Kunci bisa basi: geser satu posisi, coba lagi sekali.
-                            for geser in (-1, 1):
-                                alt = [(i + geser) % len(opsi_tombol) for i in indeks]
-                                if alt == indeks:
+                            # Jawaban ditolak: coba kombinasi lain. Setelah "Coba lagi"
+                            # pilihan biasanya direset, jadi setiap percobaan klik ulang
+                            # dari awal. Kombinasi dieksplorasi (bukan geser siklik) agar
+                            # soal "pilih tiga dari lima" seperti 174225 bisa menemukan
+                            # kombinasi yang benar.
+                            import itertools as _it
+                            sudah_kombinasi = {tuple(sorted(indeks))}
+                            for alt in _it.combinations(range(len(opsi_tombol)), jumlah):
+                                alt = list(alt)
+                                if tuple(sorted(alt)) in sudah_kombinasi:
                                     continue
+                                sudah_kombinasi.add(tuple(sorted(alt)))
+                                frame = _frame_scorm(page) or frame
+                                frame.evaluate("""() => {
+                                    const b = [...document.querySelectorAll('.acc-button, button')]
+                                        .find(x => /^Coba lagi$/i.test((x.innerText||'').trim()) &&
+                                                   x.getBoundingClientRect().width > 0);
+                                    if (b) b.click();
+                                }""")
+                                time.sleep(1.2)
+                                frame = _frame_scorm(page) or frame
                                 ss("pickmany-tombol-ulang")
+                                print(datetime.now().strftime("%H:%M:%S") +
+                                      f" [SCORM] Pick Many coba kombinasi -> "
+                                      f"{[opsi_tombol[i]['teks'][:50] for i in alt]}",
+                                      flush=True)
                                 for i in alt:
                                     frame.evaluate("""(uid) => {
                                         const e = document.getElementById('acc-' + uid);
@@ -3260,7 +3415,10 @@ def _selesaikan_scorm(page):
                                 }""")
                                 time.sleep(2.5)
                                 frame = _frame_scorm(page) or frame
-                                break
+                                ss("pickmany-tombol-sesudah-kirim")
+                                if (_cek_api_tombol() or
+                                        _status_jawaban_scorm(frame, transkrip) is True):
+                                    break
                         break
 
             # Jalur adaptif terakhir: deteksi opsi dari bentuk DOM apa pun.
