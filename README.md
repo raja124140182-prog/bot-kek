@@ -26,9 +26,11 @@ dependensi dan login sendiri**. Ikuti langkah ini:
    jika muncul halaman login, login **sendiri** di jendela itu. Bot menunggu
    sampai sesi terdeteksi (maksimal 10 menit), lalu lanjut otomatis. Jangan tutup
    browser manual saat bot berjalan.
-5. **Pantau** lewat jendela mini dan `log-modul.txt`. Screenshot sementara dihapus
-   otomatis setelah pekerjaan selesai. Aktivitas unggah video/file dan
-   `mod/feedback/` sengaja dilewati dan dicatat di log.
+5. **Pantau** lewat jendela mini dan `log-modul.txt`. Tombol **Jeda** di jendela
+   mini menahan semua aksi bot supaya Anda bisa memakai browser/halaman sendiri;
+   klik **Lanjut** untuk menyambung. Screenshot sementara dihapus otomatis setelah
+   pekerjaan selesai. Aktivitas unggah video/file dan `mod/feedback/` sengaja
+   dilewati dan dicatat di log.
 
 ## Dua Cara Memakai
 
@@ -206,6 +208,10 @@ Untuk pelajaran yang isinya berupa aplikasi interaktif SCORM (iframe bersarang
     kotak yang belum dijawab muncul lagi, lalu memilih kotak berikutnya.
     Sebelumnya flag `perlu_kembali` tidak pernah aktif, sehingga bot hanya
     menjawab satu soal lalu maju 120 slide dan berakhir dengan status `inProgress`.
+14. **Tombol Jeda/Lanjut** - jendela mini punya tombol Jeda yang menahan bot di
+    semua loop utama (SCORM, LTI, tiap aktivitas, dan tiap modul), supaya browser
+    bisa dipakai sendiri. Klik Lanjut untuk melanjutkan. Saat dijeda jendela tidak
+    merebut fokus browser.
 11. **Video dan tombol Keluar** - video diputar wajar pada 2 detik terakhir
     supaya event `ended` benar-benar terjadi. Pencarian tombol Keluar juga
     membaca `aria-label`/`title` dan alias `Exit/Close/Tutup/Kembali/Back`.

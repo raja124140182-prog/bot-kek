@@ -82,6 +82,7 @@ if not _sudah_login():
     cat("Perlu login manual: silakan login di jendela browser Hermes. Bot menunggu maksimal 10 menit.")
     for _ in range(120):
         time.sleep(5)
+        m._tunggu_jika_dijeda()
         if _sudah_login():
             cat("Login terdeteksi. Melanjutkan ke modul.")
             break
@@ -91,6 +92,7 @@ if not _sudah_login():
 time.sleep(jeda_mulai)
 
 for nama in modul:
+    m._tunggu_jika_dijeda()
     cat("\n" + "=" * 80)
     cat("MODUL:", nama)
     cat("SEBELUM:", m.alat_status_modul({"nama": nama}))

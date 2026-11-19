@@ -445,6 +445,22 @@ class JendelaMini:
             atas.pack(fill="x", padx=10, pady=(9, 2))
             tk.Label(atas, textvariable=judul_var, fg="#7dd3fc", bg="#111827",
                      font=("Segoe UI", 11, "bold"), anchor="w").pack(side="left")
+
+            jeda_var = tk.StringVar(value="Jeda")
+            def toggle_jeda():
+                if _JEDA.is_set():
+                    _JEDA.clear()
+                    jeda_var.set("Jeda")
+                    judul_var.set("Hermes berjalan")
+                    pesan_var.set("Bot melanjutkan pekerjaan.")
+                else:
+                    _JEDA.set()
+                    jeda_var.set("Lanjut")
+                    judul_var.set("Hermes DIJEDA")
+                    pesan_var.set("Klik Lanjut di jendela ini untuk menyambung.")
+
+            tk.Button(atas, textvariable=jeda_var, command=toggle_jeda, width=6,
+                      bg="#374151", fg="white", relief="flat").pack(side="right", padx=(4, 0))
             tk.Button(atas, text="_", command=root.iconify, width=2,
                       bg="#1f2937", fg="white", relief="flat").pack(side="right", padx=(4, 0))
             tk.Label(root, textvariable=pesan_var, fg="#e5e7eb", bg="#111827",
@@ -457,9 +473,11 @@ class JendelaMini:
                         judul, pesan = self._antrean.get_nowait()
                         judul_var.set(judul)
                         pesan_var.set(pesan)
-                        root.deiconify()
-                        root.lift()
-                        root.attributes("-topmost", True)
+                        # Saat dijeda, jangan merebut fokus browser milik pengguna.
+                        if not _JEDA.is_set():
+                            root.deiconify()
+                            root.lift()
+                            root.attributes("-topmost", True)
                 except queue.Empty:
                     pass
                 root.after(250, perbarui)
@@ -471,11 +489,22 @@ class JendelaMini:
 
 
 _MINI_POPUP = JendelaMini()
+_JEDA = threading.Event()   # tombol Jeda/Lanjut di jendela mini
 
 
 def tampilkan_popup(judul, pesan):
     """Tampilkan status di jendela mini Hermes yang tetap tampil (bukan toast Windows)."""
     _MINI_POPUP.tampilkan(judul, pesan)
+
+
+def _tunggu_jika_dijeda():
+    """Tahan aksi bot selama pengguna menekan tombol Jeda di jendela mini."""
+    if not _JEDA.is_set():
+        return
+    tampilkan_popup("Hermes dijeda", "Klik Lanjut di jendela mini untuk menyambung.")
+    while _JEDA.is_set():
+        time.sleep(0.5)
+    tampilkan_popup("Hermes dilanjutkan", "Bot melanjutkan pekerjaan.")
 
 
 # ============== ALAT (TOOL) ==============
@@ -2690,6 +2719,7 @@ def _selesaikan_scorm(page):
 
         start_video_diklik = False
         for _ in range(250):
+            _tunggu_jika_dijeda()
             frame = _frame_scorm(page) or frame
             # Splash video Storyline: tombol tetap ada di DOM setelah diklik,
             # jadi cukup ditekan sekali di awal sebelum slide soal muncul.
@@ -3475,6 +3505,7 @@ def _tunggu_toc(page, batas=30):
     """Tunggu sampai daftar aktivitas (TOC) halaman pelajaran benar-benar ada."""
     akhir = time.time() + max(1, batas)
     while time.time() < akhir:
+        _tunggu_jika_dijeda()
         for f in _semua_frame(page):
             try:
                 if f.locator(".toc__children_container").count() > 0:
@@ -3860,6 +3891,7 @@ def _selesaikan_lti(page):
 
     try:
         for putaran in range(80):
+            _tunggu_jika_dijeda()
             frame = ambil_frame()
             if not frame:
                 break
@@ -3908,6 +3940,7 @@ def _selesaikan_lti(page):
                 jepret("refleksi-mulai")
 
                 for _langkah in range(40):
+                    _tunggu_jika_dijeda()
                     frame = ambil_frame() or frame
                     info = info_refleksi(frame)
                     if info["opsi"]:
@@ -3961,6 +3994,7 @@ def _selesaikan_lti(page):
 
         # Perbaiki kartu yang sudah selesai tetapi ratingnya masih < 5/5.
         for putaran_tile in range(40):
+            _tunggu_jika_dijeda()
             frame = ambil_frame()
             if not frame:
                 break
@@ -4016,6 +4050,7 @@ def _selesaikan_lti(page):
                     jepret("tile-mengulang")
 
                 for _langkah in range(40):
+                    _tunggu_jika_dijeda()
                     frame = ambil_frame() or frame
                     info = info_refleksi(frame)
                     if info["opsi"]:
@@ -4225,6 +4260,7 @@ def alat_kerjakan_modul(arg):
         _catat(log, f"Putaran {putaran+1}: {len(belum)} aktivitas belum selesai.")
         berubah = 0
         for a in belum:
+            _tunggu_jika_dijeda()
             st = _status_aktivitas_api(page, a["instance"])
             if _selesai_aktivitas(st):
                 _catat(log, f"  ✓ {a['grup']}/{a['nama']} sudah completed (API).")
@@ -4424,6 +4460,7 @@ def proses_pertanyaan(pesan, riwayat):
     alat_web_dipakai = False
     pernah_rencana = False
     for langkah in range(MAKS_LANGKAH_ALAT):
+        _tunggu_jika_dijeda()
         print("  ⏳ Hermes sedang berpikir...", end="\r", flush=True)
         try:
             jawaban = panggil_model(riwayat)
