@@ -2598,7 +2598,20 @@ def _selesaikan_scorm(page):
 
     frame = _frame_scorm(page)
     if not frame:
-        return ""
+        # Frame SCORM bersarang kadang baru termuat >12 detik setelah halaman
+        # pelajaran dibuka. Tanpa penunggu ini aktivitas dianggap selesai
+        # tanpa mengerjakan apa pun (0 screenshot, API tetap inProgress).
+        for _ in range(25):
+            time.sleep(1)
+            frame = _frame_scorm(page)
+            if frame:
+                print(datetime.now().strftime("%H:%M:%S") +
+                      " [SCORM] frame baru termuat setelah ditunggu.", flush=True)
+                break
+        if not frame:
+            print(datetime.now().strftime("%H:%M:%S") +
+                  " [SCORM] frame tidak pernah muncul; aktivitas dilewati.", flush=True)
+            return ""
 
     folder_ss = FOLDER_SIMPAN / f"ss-pikirkan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     folder_ss.mkdir(parents=True, exist_ok=True)
@@ -3465,13 +3478,13 @@ def _selesaikan_scorm(page):
             }"""):
                 break
             maju_tanpa_jawaban += 1
-            if maju_tanpa_jawaban > 120:
+            if maju_tanpa_jawaban > 40:
                 try:
                     cuplikan = " ".join(frame.inner_text("body").split())[:400]
                 except Exception:
                     cuplikan = ""
                 print(datetime.now().strftime("%H:%M:%S") +
-                      " [SCORM] berhenti: 120 slide tanpa interaksi. Teks: " +
+                      " [SCORM] berhenti: 40 slide tanpa interaksi. Teks: " +
                       cuplikan, flush=True)
                 break
             time.sleep(1.2)
