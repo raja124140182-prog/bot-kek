@@ -72,6 +72,9 @@ PEMILIH_KEDUA = bool(_CFG_BOT.get("pemilih_kedua", True))
 # ulang setiap kali modul dijalankan, jadi daftar bisa diubah tanpa restart.
 # Kosong = kerjakan semua aktivitas seperti sebelumnya.
 FILE_TARGET = Path(__file__).resolve().parent / "target-aktivitas.txt"
+# Aktivitas LTI yang ratingnya sudah diverifikasi 5/5 dalam proses bot ini.
+# Mencegah pemindaian ulang yang mahal pada 3x attempt per modul.
+_RATING_SUDAH_OK = set()
 
 
 def _target_aktivitas():
@@ -4678,8 +4681,10 @@ def _selesai_aktivitas(status):
     return str(status or "").lower() in ("completed", "completedpass")
 
 
-def _selesaikan_lti(page):
+def _selesaikan_lti(page, hanya_rating=False):
     """Kerjakan SEMUA kartu 'Berkolaborasi' dengan jawaban yang benar-benar dibaca.
+
+    hanya_rating=True: lewati kartu baru, perbaiki saja tile yang ratingnya <5/5.
 
     Perbaikan penting dibanding versi lama:
     - setiap kartu dibuka, teks studi kasus/pertanyaan diskusi dibaca;
@@ -4904,8 +4909,36 @@ def _selesaikan_lti(page):
     dicoba = set()
     catatan = []
 
+    def baca_tiles(fr):
+        """Baca semua tile penyelesaian beserta rating 1-5 dari frame LTI."""
+        return fr.evaluate("""() => [...document.querySelectorAll('.activity-completion-section')].map((e,i)=>{
+            const tr=e.closest('tr');
+            const role=(tr?.querySelector('.role-name')?.innerText||'').replace(/\\s+/g,' ').trim();
+            const tds=tr?[...tr.querySelectorAll('td')]:[];
+            const kolom=tds.indexOf(e.closest('td'));
+            const rating=(e.querySelector('.rating-text')?.innerText||'').replace(/\\s+/g,' ').trim();
+            return {i, kunci:'tile-'+role+'#'+kolom, rating, role, kolom};
+        })""")
+
+    def rating_angka(teks):
+        mm = re.match(r"^\\s*(\\d+)\\s*/\\s*5\\s*$", str(teks or ""))
+        return int(mm.group(1)) if mm else None
+
+    def tunggu_kembali(fr, detik=75):
+        """Tunggu sampai halaman detail/refleksi ditutup dan daftar tampil lagi."""
+        for _ in range(detik):
+            fr = ambil_frame() or fr
+            try:
+                if not fr.evaluate(
+                        "() => !!document.querySelector('.activity-details-heading')"):
+                    return fr
+            except Exception:
+                pass
+            time.sleep(1)
+        return fr
+
     try:
-        for putaran in range(80):
+        for putaran in range(0 if hanya_rating else 80):
             _tunggu_jika_dijeda()
             frame = ambil_frame()
             if not frame:
@@ -5008,7 +5041,11 @@ def _selesaikan_lti(page):
                 continue
 
         # Perbaiki kartu yang sudah selesai tetapi ratingnya masih < 5/5.
-        for putaran_tile in range(40):
+        # Tile bisa butuh beberapa kali ulang karena umpan balik GenAI muncul
+        # terlambat, jadi percobaan tidak boleh habis hanya karena satu kiriman.
+        MAKS_PERCOBAAN = 4
+        percobaan = {}
+        for putaran_tile in range(120):
             _tunggu_jika_dijeda()
             frame = ambil_frame()
             if not frame:
@@ -5024,47 +5061,54 @@ def _selesaikan_lti(page):
                     }""")
                     time.sleep(1.5)
                     continue
-                tiles = frame.evaluate("""() => [...document.querySelectorAll('.activity-completion-section')].map((e,i)=>{
-                    const tr=e.closest('tr');
-                    const role=(tr?.querySelector('.role-name')?.innerText||'').replace(/\\s+/g,' ').trim();
-                    const tds=tr?[...tr.querySelectorAll('td')]:[];
-                    const kolom=tds.indexOf(e.closest('td'));
-                    const rating=(e.querySelector('.rating-text')?.innerText||'').replace(/\\s+/g,' ').trim();
-                    return {i, kunci:'tile-'+role+'#'+kolom, rating, role, kolom};
-                })""")
-                rendah = []
-                for t in tiles:
-                    mm = re.match(r"^\s*(\d+)\s*/\s*5\s*$", str(t["rating"]))
-                    if mm and int(mm.group(1)) < 5 and t["kunci"] not in dicoba:
-                        rendah.append(t)
+                tiles = baca_tiles(frame)
+                rendah = [t for t in tiles
+                          if (rating_angka(t["rating"]) or 5) < 5
+                          and percobaan.get(t["kunci"], 0) < MAKS_PERCOBAAN]
                 if not rendah:
                     break
                 t = rendah[0]
                 kunci = t["kunci"]
-                dicoba.add(kunci)
+                percobaan[kunci] = percobaan.get(kunci, 0) + 1
                 frame.evaluate("""(i)=>{
                     const e=document.querySelectorAll('.activity-completion-section')[i];
                     if(e)e.click();
                 }""", t["i"])
                 time.sleep(3)
                 frame = ambil_frame() or frame
+                # Kembali ke daftar bila tile langsung menampilkan detail lama.
+                if frame.evaluate("() => !!document.querySelector('.activity-details-heading')"):
+                    frame.evaluate("""() => {
+                        const panah = document.querySelector('.no-js-collaborate-details-back-arrow');
+                        if (panah) panah.click();
+                        const keluar = [...document.querySelectorAll('*')].find(x =>
+                            x.children.length === 0 && /Keluar dari latihan/i.test(x.textContent || ''));
+                        if (keluar) (keluar.closest('div') || keluar).click();
+                    }""")
+                    time.sleep(1.5)
+                    frame = ambil_frame() or frame
                 ocr = jepret("tile-detail")
                 teks_detail = " ".join(frame.inner_text("body").split())
                 konteks = konteks_dari(teks_detail)
-                catatan.append(f"{kunci}: rating {t['rating']} -> konteks {len(konteks)} char, "
-                               f"OCR {len(ocr)} char")
+                catatan.append(f"{kunci}: rating {t['rating']} attempt "
+                               f"{percobaan[kunci]}/{MAKS_PERCOBAAN}, konteks "
+                               f"{len(konteks)} char, OCR {len(ocr)} char")
 
-                if frame.evaluate("""() => [...document.querySelectorAll('*')].some(x =>
-                        x.children.length === 0 && /Mengulang/i.test(x.textContent || ''))"""):
+                # Tombol 'Mengulang' / 'Refleksikan aktivitasnya' bisa muncul
+                # dengan label berbeda; keduanya memulai sesi penilaian ulang.
+                if frame.evaluate("""() => [...document.querySelectorAll('button, a, div, span')]
+                        .some(x => x.getBoundingClientRect().width > 0 &&
+                                   /Mengulang|Refleksikan aktivitasnya/i.test(x.innerText || ''))"""):
                     frame.evaluate("""() => {
-                        const e=[...document.querySelectorAll('*')].find(x =>
-                            x.children.length === 0 && /Mengulang/i.test(x.textContent || ''));
+                        const e=[...document.querySelectorAll('button, a, div, span')]
+                            .find(x => x.getBoundingClientRect().width > 0 &&
+                                       /Mengulang|Refleksikan aktivitasnya/i.test(x.innerText || ''));
                         if(e)(e.closest('button')||e).click();
                     }""")
                     time.sleep(2.5)
                     jepret("tile-mengulang")
 
-                for _langkah in range(40):
+                for _langkah in range(50):
                     _tunggu_jika_dijeda()
                     frame = ambil_frame() or frame
                     info = info_refleksi(frame)
@@ -5099,33 +5143,38 @@ def _selesaikan_lti(page):
                         jepret("tile-kirim-tanpa-teks")
                         time.sleep(2.5)
                         continue
-                    # Tunggu umpan balik GenAI selesai sebelum baca rating barunya.
+                    # Umpan balik GenAI sering baru selesai setelah >20 detik.
                     time.sleep(20)
                     break
 
                 jepret("tile-selesai")
                 perbaikan += 1
-                try:
+                # Tunggu detail tertutup, lalu polling rating hingga berubah
+                # (atau timeout). Jangan baca sekali setelah tidur tetap.
+                frame = tunggu_kembali(frame)
+                rating_baru = ""
+                for _ in range(40):
                     frame = ambil_frame() or frame
-                    rating_baru = frame.evaluate("""(k)=>{
-                        for(const tr of document.querySelectorAll('tr')){
-                            const role=(tr.querySelector('.role-name')?.innerText||'')
-                                .replace(/\\s+/g,' ').trim();
-                            const tds=[...tr.querySelectorAll('td')];
-                            const kolom=tds.findIndex(td=>td.querySelector('.activity-completion-section'));
-                            if(('tile-'+role+'#'+kolom)!==k) continue;
-                            return (tds[kolom].querySelector('.rating-text')?.innerText||'').trim();
-                        }
-                        return '';
-                    }""", kunci)
-                    if rating_baru:
-                        catatan[-1] += f" -> rating {rating_baru}"
-                except Exception:
-                    pass
+                    for tk in baca_tiles(frame):
+                        if tk["kunci"] == kunci:
+                            rating_baru = tk["rating"]
+                            break
+                    if rating_baru and rating_angka(rating_baru) == 5:
+                        break
+                    time.sleep(1.5)
+                if rating_baru:
+                    catatan[-1] += f" -> rating {rating_baru}"
             except Exception as e:
                 catatan.append(f"tile {putaran_tile}: error {type(e).__name__} {e}")
                 time.sleep(1.5)
                 continue
+
+        try:
+            frame = ambil_frame() or frame
+            sisa_rating = sum(1 for t in baca_tiles(frame)
+                              if (rating_angka(t["rating"]) or 5) < 5)
+        except Exception:
+            sisa_rating = -1
     finally:
         try:
             for berkas in folder_ss.glob("*.png"):
@@ -5135,9 +5184,10 @@ def _selesaikan_lti(page):
             pass
 
     ringkas = "; ".join(catatan[:4])
-    return (f"Kolaborasi LTI: {selesai} kartu dikerjakan, {perbaikan} kartu rating <5/5 "
-            f"diulang dengan jawaban berbasis konteks aktivitas (model lokal + OCR tiap "
-            f"langkah). {ringkas}") if (selesai or perbaikan) else ""
+    return (f"Kolaborasi LTI: {selesai} kartu dikerjakan, {perbaikan} ulangan rating, "
+            f"sisa rating <5/5: {sisa_rating}. "
+            f"Jawaban berbasis konteks aktivitas (model lokal + OCR tiap langkah). {ringkas}"
+            ) if (selesai or perbaikan or sisa_rating > 0) else ""
 
 
 def _lewati_video_dan_keluar(page):
@@ -5352,6 +5402,8 @@ def alat_kerjakan_modul(arg):
                         time.sleep(1)
                     hasil_lti = _selesaikan_lti(halaman)
                 _catat(log, "  " + (hasil_lti or "Kolaborasi tidak diproses."))
+                if hasil_lti and "sisa rating <5/5: 0" in hasil_lti:
+                    _RATING_SUDAH_OK.add((nama, a["instance"]))
             elif re.match(r"^Pelajari lebih lanjut\b", a["nama"], re.I):
                 _catat(log, "  " + _lewati_video_dan_keluar(halaman))
             else:
@@ -5391,6 +5443,49 @@ def alat_kerjakan_modul(arg):
         # Kembali ke kursus untuk cek centang modul terbaru
         alat_buka_browser({"url": url_kursus})
         time.sleep(6)
+
+    # Perbaiki rating <5/5 pada aktivitas LTI yang sudah completed menurut API.
+    # Tanpa fase ini bot hanya menyentuh LTI yang belum lulus, sehingga kartu
+    # dengan rating 4/5 dibiarkan walaupun status API sudah completed.
+    for a in daftar:
+        _tunggu_jika_dijeda()
+        if not (a["modtype"] == "lti" or
+                re.match(r"^Berkolaborasi\b", a["nama"], re.I)):
+            continue
+        penanda = (nama, a["instance"])
+        if penanda in _RATING_SUDAH_OK:
+            continue
+        try:
+            alat_buka_browser({"url": a["url"]})
+            halaman = _pastikan_browser()
+            for _ in range(60):
+                if any("/ltiPage" in (x.url or "") for x in _semua_frame(halaman)):
+                    break
+                time.sleep(1)
+            fr = next((x for x in _semua_frame(halaman)
+                       if "/ltiPage" in (x.url or "")), None)
+            if not fr:
+                continue
+            ratings = fr.evaluate("""() => [...document.querySelectorAll('.rating-text')]
+                .map(e => (e.innerText||'').replace(/\\s+/g,' ').trim())""")
+            ada_rendah = False
+            for r in ratings:
+                mm = re.match(r"^\s*(\d+)\s*/\s*5\s*$", str(r))
+                if mm and int(mm.group(1)) < 5:
+                    ada_rendah = True
+                    break
+            if not ada_rendah:
+                _RATING_SUDAH_OK.add(penanda)
+                continue
+            _catat(log, f"  Rating {a['instance']} masih {ratings}; diperbaiki.")
+            hasil_rating = _selesaikan_lti(halaman, hanya_rating=True)
+            if hasil_rating:
+                _catat(log, "  " + hasil_rating[:400])
+            if "sisa rating <5/5: 0" in (hasil_rating or ""):
+                _RATING_SUDAH_OK.add(penanda)
+        except Exception as e:
+            _catat(log, f"  Gagal cek rating {a['instance']}: "
+                        f"{type(e).__name__} {e}")
 
     # Pastikan status akhir dibaca dari halaman kursus, bukan halaman aktivitas.
     try:
