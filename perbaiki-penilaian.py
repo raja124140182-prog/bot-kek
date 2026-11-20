@@ -62,26 +62,50 @@ def semua_kuis():
                 for a in sub.get("modules") or []:
                     if str(a.get("modtype") or "") != "quiz":
                         continue
+                    att = a.get("attempt") or {}
                     hasil.append({
                         "instance": str(a.get("instance") or ""),
                         "nama": str(a.get("name") or ""),
                         "status": str(a.get("userStatus") or ""),
                         "modul": str(induk.get("name") or ""),
                         "pelajaran": str(les.get("name") or ""),
+                        "sisa": att.get("remaining"),
+                        "total": att.get("totalallowed"),
+                        "nilai_api": a.get("grade") or a.get("score") or "",
                         "url": f"{basis}/course-lesson/{les['sectionid']}/{a['instance']}",
                     })
             # Quiz bisa langsung di bawah lesson tanpa grup 'sub'.
             for a in les.get("modules") or []:
                 if str(a.get("modtype") or "") != "quiz":
                     continue
+                att = a.get("attempt") or {}
                 hasil.append({
                     "instance": str(a.get("instance") or ""),
                     "nama": str(a.get("name") or ""),
                     "status": str(a.get("userStatus") or ""),
                     "modul": str(induk.get("name") or ""),
                     "pelajaran": str(les.get("name") or ""),
+                    "sisa": att.get("remaining"),
+                    "total": att.get("totalallowed"),
+                    "nilai_api": a.get("grade") or a.get("score") or "",
                     "url": f"{basis}/course-lesson/{les['sectionid']}/{a['instance']}",
                 })
+        # Quiz juga bisa langsung di bawah modul induk (kasus Modul Penilaian).
+        for a in induk.get("modules") or []:
+            if str(a.get("modtype") or "") != "quiz":
+                continue
+            att = a.get("attempt") or {}
+            hasil.append({
+                "instance": str(a.get("instance") or ""),
+                "nama": str(a.get("name") or ""),
+                "status": str(a.get("userStatus") or ""),
+                "modul": str(induk.get("name") or ""),
+                "pelajaran": "",
+                "sisa": att.get("remaining"),
+                "total": att.get("totalallowed"),
+                "nilai_api": a.get("grade") or a.get("score") or "",
+                "url": f"{basis}/course-lesson/{induk['sectionid']}/{a['instance']}",
+            })
     # Buang duplikat instance.
     unik, terlihat = [], set()
     for q in hasil:
@@ -95,8 +119,12 @@ def jalankan():
     daftar = semua_kuis()
     cat("TOTAL KUIS/PENILAIAN:", len(daftar))
     for q in daftar:
-        cat(f"  {q['instance']} | {q['status']} | {q['modul']} | {q['nama']}")
-    sasaran = [q for q in daftar if not m._selesai_aktivitas(q["status"])]
+        cat(f"  {q['instance']} | {q['status']} | sisa attempt "
+            f"{q.get('sisa')}/{q.get('total')} | nilai_api={q.get('nilai_api')} "
+            f"| {q['modul']} | {q['nama']}")
+    sasaran = [q for q in daftar
+               if not m._selesai_aktivitas(q["status"])
+               and str(q.get("sisa")) not in ("0", "0.0")]
     cat("Perlu dikerjakan:", len(sasaran))
     for siklus in range(1, 4):
         cat(f"=== SIKLUS {siklus} ===")
@@ -110,8 +138,16 @@ def jalankan():
                 hasil = m._selesaikan_quiz(halaman)
                 cat("  ", (hasil or "tidak ada soal attempt yang dikerjakan")[:500])
                 st = m._status_aktivitas_api(m._pastikan_browser(), q["instance"])
-                cat(f"  status API: {st}")
-                if not m._selesai_aktivitas(st):
+                nilai = m._nilai_kuis(m._pastikan_browser())
+                info = m._info_attempt_api(m._pastikan_browser(), q["instance"])
+                sisa_baru = (info.get("attempt") or {}).get("remaining")
+                cat(f"  status API: {st} | nilai: {nilai}% | sisa attempt: {sisa_baru}")
+                # Target 100, ambang aman 90. Bila sudah >=90 jangan pakai
+                # attempt tersisa hanya untuk mengejar 100 (risiko turun).
+                if (m._selesai_aktivitas(st) or
+                        (nilai is not None and nilai >= 90)):
+                    cat("  AMAN: kuis lulus / nilai minimal tercapai; attempt disimpan.")
+                else:
                     tersisa.append(q)
             except Exception as e:
                 cat(f"  ERROR {type(e).__name__}: {e}")

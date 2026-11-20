@@ -37,6 +37,7 @@ import time
 import urllib.request
 import urllib.parse
 import webbrowser
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1960,35 +1961,129 @@ def _teks_opsi_attempt(frame):
         return None
 
 
-def _tanyakan_jawaban(soal, opsi):
-    """Minta otak AI lokal memilih satu jawaban benar dari opsi yang tersedia."""
-    if not soal or not opsi:
-        return None
-    daftar = "\n".join(f"{i+1}. {o}" for i, o in enumerate(opsi))
-    pesan = [
-        {"role": "system", "content":
-            "Kamu menjawab satu soal pilihan ganda. Pilih SATU opsi yang PALING benar. "
-            "Balas HANYA dengan menyalin persis teks opsi itu, tanpa nomor, tanpa penjelasan."},
-        {"role": "user", "content": f"Soal: {soal}\n\nOpsi:\n{daftar}"},
-    ]
+_KONTEKS_PENILAIAN = None
+
+
+def _muat_konteks_penilaian():
+    """Prinsip jawaban dari transkrip/kasus lokal (tanpa internet)."""
+    global _KONTEKS_PENILAIAN
+    if _KONTEKS_PENILAIAN is not None:
+        return _KONTEKS_PENILAIAN
+    teks = []
     try:
-        jawab = panggil_model(pesan).strip().strip('"\'`')
+        dat = json.loads(PETA_TRANSKRIP.read_text(encoding="utf-8"))
+        for e in dat.get("entri", []):
+            p = str(e.get("prinsip") or "").strip()
+            if p:
+                teks.append(p)
     except Exception:
-        return opsi[0]
+        pass
+    try:
+        dat = json.loads(SKEMA_KASUS.read_text(encoding="utf-8"))
+        sk = dat.get("skema") or {}
+        for kunci in ("langkah", "prinsip_benar", "prinsip_salah"):
+            for p in sk.get(kunci) or []:
+                if p:
+                    teks.append(str(p).strip())
+    except Exception:
+        pass
+    _KONTEKS_PENILAIAN = list(dict.fromkeys(teks))
+    return _KONTEKS_PENILAIAN
+
+
+def _kata_kunci(teks):
+    return {k for k in re.findall(r"[a-z]{3,}", str(teks or "").lower())
+            if k not in _KATA_STOP}
+
+
+def _konteks_penilaian(soal, opsi):
+    """Ambil prinsip lokal yang paling relevan dengan soal + opsi."""
+    kata = _kata_kunci(str(soal) + " " + " ".join(str(o) for o in opsi))
+    if not kata:
+        return ""
+    skor = []
+    for prinsip in _muat_konteks_penilaian():
+        pertandingan = len(kata & _kata_kunci(prinsip))
+        if pertandingan:
+            skor.append((pertandingan, prinsip))
+    skor.sort(key=lambda x: -x[0])
+    return "\n".join(p for _, p in skor[:8])
+
+
+def _cocokkan_jawaban_opsi(jawab, opsi):
+    """Ubah jawaban bebas model menjadi salah satu teks opsi persis."""
+    if not jawab:
+        return None
+    j = str(jawab).strip().strip('"\'`').strip()
+    j = re.sub(r"^(jawaban|opsi|pilihan)\s*:\s*", "", j, flags=re.I).strip()
+    jp = j.lower().replace(" ", "")
     for o in opsi:
-        if jawab.lower().replace(" ", "") == o.lower().replace(" ", ""):
+        if jp == o.lower().replace(" ", ""):
             return o
     for o in opsi:
-        bersih = o.lower().replace(" ", "")
-        if bersih and bersih in jawab.lower().replace(" ", ""):
+        if o.lower().replace(" ", "") and o.lower().replace(" ", "") in jp:
             return o
-    angka = re.match(r"^(\d+)[.)]", jawab)
+    angka = re.match(r"^(\d+)[.)]?", j)
     if angka and 1 <= int(angka.group(1)) <= len(opsi):
         return opsi[int(angka.group(1)) - 1]
     for o in opsi:
-        if o.lower() in jawab.lower():
+        if o.lower() in j.lower():
             return o
-    return opsi[0]
+    return None
+
+
+def _tanyakan_jawaban(soal, opsi):
+    """Putuskan jawaban kuis secara hati-hati (3 pemeriksaan, suhu rendah)."""
+    if not soal or not opsi:
+        return None
+    daftar = "\n".join(f"{i+1}. {o}" for i, o in enumerate(opsi))
+    konteks = _konteks_penilaian(soal, opsi)
+    bagian_konteks = (f"\n\nPRINSIP LOKAL YANG RELEVAN:\n{konteks}" if konteks else "")
+
+    pemeriksaan = [
+        ([
+            {"role": "system", "content":
+                "Kamu menjawab satu soal pilihan ganda mata pelajaran Wadhwani. "
+                "Pilih SATU opsi yang PALING benar. Balas HANYA teks opsi persis, "
+                "tanpa nomor dan tanpa penjelasan."},
+            {"role": "user", "content": f"Soal: {soal}\n\nOpsi:\n{daftar}{bagian_konteks}"},
+        ], 0.0),
+        ([
+            {"role": "system", "content":
+                "Periksa setiap opsi satu per satu. Tandai opsi yang jelas SALAH "
+                "karena bertentangan dengan soal/prinsip, lalu pilih satu opsi "
+                "tersisa yang paling tepat. Balas HANYA teks opsi terpilih persis."},
+            {"role": "user", "content": f"Soal: {soal}\n\nOpsi:\n{daftar}{bagian_konteks}"},
+        ], 0.15),
+        ([
+            {"role": "system", "content":
+                "Jawab sebagai pemeriksa kedua. Gunakan prinsip komunikasi/profesionalisme "
+                "Wadhwani: tindakan yang jujur, jelas, tepat waktu, kolaboratif, dan "
+                "berorientasi hasil hampir selalu benar; yang menunda, menyalahkan, "
+                "mengabaikan, atau berbohong hampir selalu salah. "
+                "Balas HANYA teks opsi persis."},
+            {"role": "user", "content": f"Soal: {soal}\n\nOpsi:\n{daftar}{bagian_konteks}"},
+        ], 0.0),
+    ]
+
+    pilihan = []
+    for pesan, suhu in pemeriksaan:
+        try:
+            jawab = panggil_model(pesan, suhu=suhu)
+        except Exception:
+            continue
+        o = _cocokkan_jawaban_opsi(jawab, opsi)
+        if o:
+            pilihan.append(o)
+    if not pilihan:
+        print(f"[KUIS] Tidak ada jawaban terbaca; pakai opsi pertama: {opsi[0][:60]}",
+              flush=True)
+        return opsi[0]
+    hitung = Counter(pilihan)
+    terbaik, jumlah = hitung.most_common(1)[0]
+    print(f"[KUIS] {str(soal)[:68]}... -> {terbaik[:55]} "
+          f"(setuju {jumlah}/{len(pilihan)})", flush=True)
+    return terbaik
 
 
 def _selesaikan_attempt_otomatIs():
@@ -2085,6 +2180,41 @@ def _selesaikan_attempt_otomatIs():
             pass
         break
     return "\n".join(hasil) if hasil else "Tidak ada soal attempt yang dikerjakan."
+
+
+def _info_attempt_api(page, instance):
+    """Data kuis terbaru dari API (attempt tersisa, nilai maks, status)."""
+    dat = _data_konten_kursus(page, paksa=True)
+    for m in (dat or {}).get("data", {}).get("contents", {}).get("modules") or []:
+        for a in m.get("modules") or []:
+            if str(a.get("instance")) == str(instance):
+                return a
+    return {}
+
+
+def _nilai_kuis(page):
+    """Baca persentase nilai dari halaman ringkasan kuis Moodle."""
+    pola = [
+        r"Nilai\s*:\s*(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)",
+        r"Grade\s*:\s*(\d+(?:[.,]\d+)?)\s*(?:out of|/)\s*(\d+(?:[.,]\d+)?)",
+        r"Skor\s*:\s*(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)",
+        r"(\d+(?:[.,]\d+)?)\s*%",
+    ]
+    for f in _semua_frame(page):
+        try:
+            teks = " ".join(f.inner_text("body").split())
+        except Exception:
+            continue
+        for p in pola:
+            mm = re.search(p, teks, re.I)
+            if not mm:
+                continue
+            nilai = float(mm.group(1).replace(",", "."))
+            maks = (float(mm.group(2).replace(",", "."))
+                    if mm.lastindex and mm.lastindex > 1 else 100.0)
+            if maks > 0:
+                return round(nilai / maks * 100, 1)
+    return None
 
 
 def _selesaikan_feedback(frame):
@@ -5623,12 +5753,12 @@ ALAT = {
 
 # ============== OTAK AGENT ==============
 
-def panggil_model(pesan):
+def panggil_model(pesan, suhu=0.6):
     body = json.dumps({
         "model": MODEL,
         "messages": pesan,
         "stream": False,
-        "options": {"temperature": 0.6},
+        "options": {"temperature": suhu},
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=body,
                                  headers={"Content-Type": "application/json"})
