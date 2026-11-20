@@ -5327,6 +5327,9 @@ def _selesaikan_lti(page, hanya_rating=False):
                 rendah = [t for t in tiles
                           if (rating_angka(t["rating"]) or 5) < 5
                           and percobaan.get(t["kunci"], 0) < MAKS_PERCOBAAN]
+                catatan.append("rendah: " + str(len(rendah)) + " " + str(
+                    [(t["kunci"], t["rating"], rating_angka(t["rating"]))
+                     for t in rendah[:5]]))
                 if not rendah:
                     status_aktif(f"Memindai rating: {len(tiles)} tile, semua sudah 5/5.")
                     break
