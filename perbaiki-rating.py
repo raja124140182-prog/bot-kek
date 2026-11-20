@@ -87,6 +87,10 @@ def proses(inst, url,estimasi=""):
     halaman, frame = buka_lti(url)
     ratings, rendah = baca_rating(frame)
     status = m._status_aktivitas_api(m._pastikan_browser(), inst)
+    if frame is None:
+        cat(f"{inst} | frame /ltiPage tidak tersedia; "
+            f"{'lewat' if selesai(status) else 'akan dicoba lagi'}.")
+        return (not selesai(status)), status, ratings
     if selesai(status) and rendah == 0:
         return False, status, ratings
     hanya_rating = selesai(status) and rendah > 0

@@ -2005,6 +2005,26 @@ def _selesaikan_attempt_otomatIs():
             break
         data = _teks_opsi_attempt(f)
         if not data or not data.get("soal"):
+            # Attempt baru masih menampilkan tombol 'Mulai kuis' / 'Start quiz'
+            # sebelum soal pertama (.que) muncul. Klik dulu, lalu baca lagi.
+            dimulai = False
+            try:
+                dimulai = bool(f.evaluate("""() => {
+                    const e = [...document.querySelectorAll('button, input[type=submit], a')]
+                        .find(x => {
+                            const r = x.getBoundingClientRect();
+                            if (r.width <= 0 || r.height <= 0) return false;
+                            const t = (x.innerText || x.value || '').trim();
+                            return /^(Mulai kuis|Start quiz|Start attempt|Mulai attempt)/i.test(t);
+                        });
+                    if (e) { e.click(); return true; }
+                    return false;
+                }"""))
+            except Exception:
+                pass
+            if dimulai:
+                time.sleep(2)
+                continue
             break
         jawab = _tanyakan_jawaban(data["soal"], data["opsi"])
         r = alat_pilih_opsi({"teks": jawab})
@@ -5260,6 +5280,55 @@ def _lewati_video_dan_keluar(page):
             f"{'diklik' if keluar else 'tidak ditemukan'}.")
 
 
+def _frame_attempt(page):
+    """Cari iframe Moodle attempt.php (bersarang sekalipun)."""
+    return next((f for f in _semua_frame(page)
+                 if "attempt.php" in (f.url or "")), None)
+
+
+def _klik_mulai_kuis(page):
+    """Klik tombol memulai kuis di halaman course-lesson / iframe Moodle."""
+    pola = (r"Kerjakan kuis|Mengerjakan kuis kembali|Lanjutkan pengerjaan kuis|"
+            r"Mulai kuis|Start quiz|Start attempt|Attempt quiz now|Re-attempt quiz")
+    for f in _semua_frame(page):
+        try:
+            klik = f.evaluate("""(pola) => {
+                const re = new RegExp(pola, 'i');
+                const els = [...document.querySelectorAll(
+                    'button, a, input[type=submit], [role=button], span, div')]
+                    .filter(e => {
+                        const r = e.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    });
+                const e = els.find(x => re.test(
+                    (x.innerText || x.value || x.textContent || '').trim()));
+                if (e) { e.click(); return (e.innerText || e.value || '').trim(); }
+                return '';
+            }""", pola)
+            if klik:
+                return klik
+        except Exception:
+            continue
+    return ""
+
+
+def _selesaikan_quiz(page):
+    """Buka attempt kuis bila perlu lalu jawab semua soal sampai selesai."""
+    for _ in range(4):
+        if _frame_attempt(page):
+            break
+        tombol = _klik_mulai_kuis(page)
+        if not tombol:
+            break
+        for _ in range(25):
+            time.sleep(0.6)
+            if _frame_attempt(page):
+                break
+    if not _frame_attempt(page):
+        return ""
+    return _selesaikan_attempt_otomatIs()
+
+
 def alat_kerjakan_modul(arg):
     """Selesaikan semua pelajaran dalam modul sampai tanda centang modul penuh."""
     nama = str(arg.get("nama") or arg.get("modul") or "").strip()
@@ -5376,10 +5445,14 @@ def alat_kerjakan_modul(arg):
             if frame_feedback or a["modtype"] == "feedback":
                 _catat(log, "  DILEWATI: mod/feedback (sesuai instruksi).")
                 continue
-            frame_kuis = next((f for f in _semua_frame(halaman)
-                               if "attempt.php" in (f.url or "")), None)
-            if frame_kuis and _teks_opsi_attempt(frame_kuis):
-                _catat(log, "  " + _selesaikan_attempt_otomatIs().replace("\n", " | ")[:400])
+            frame_kuis = _frame_attempt(halaman)
+            if (a["modtype"] == "quiz" or frame_kuis or
+                    re.search(r"Penilaian|Assessment|Kuis\b", a["nama"], re.I)):
+                hasil_quiz = _selesaikan_quiz(halaman)
+                if hasil_quiz:
+                    _catat(log, "  " + hasil_quiz.replace("\n", " | ")[:500])
+                elif a["modtype"] == "quiz":
+                    _catat(log, "  Kuis belum bisa dimulai (tombol/iframe tidak ditemukan).")
             elif a["modtype"] == "lti" or re.match(r"^Berkolaborasi\b", a["nama"], re.I):
                 # Frame /ltiPage bisa termuat jauh lebih lambat daripada frame
                 # biasa. Tunggu sampai benar-benar ada sebelum menyerah.
