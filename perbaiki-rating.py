@@ -167,6 +167,7 @@ def buka_lti(url):
         if detik % 30 == 0:
             cat(f"  LTI {inst}: masih menunggu frame ({detik}s)")
             m.status_aktif(f"Menunggu LTI {inst} ({detik}s)")
+        time.sleep(1)
     return halaman, None, faktor
 
 
