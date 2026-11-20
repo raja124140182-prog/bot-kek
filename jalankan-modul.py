@@ -27,6 +27,19 @@ def cat(*args):
     print(datetime.now().strftime("%H:%M:%S"), *args, flush=True)
 
 
+def modul_selesai(status):
+    """Hanya anggap selesai bila tidak ada baris modul yang SEBAGIAN/BELUM.
+
+    Status juga memuat baris "Modul Penilaian ... SELESAI", sehingga pencarian
+    "SELESAI" biasa bisa salah mengira modul utama yang baru 7/8 sudah tuntas.
+    """
+    teks = str(status or "")
+    for baris in teks.splitlines():
+        if "SEBAGIAN" in baris.upper() or "BELUM" in baris.upper():
+            return False
+    return "SELESAI" in teks.upper()
+
+
 def muat_konfigurasi():
     if not KONFIGURASI.exists():
         raise SystemExit(f"File konfigurasi tidak ditemukan: {KONFIGURASI}")
@@ -99,9 +112,15 @@ for nama in modul:
     for attempt in range(1, 4):
         hasil = m.alat_kerjakan_modul({"nama": nama})
         cat(f"  ATTEMPT {attempt}: {hasil}")
+        # UI bisa tetap SEBAGIAN karena item yang sengaja dilewati (174072,
+        # unggah video, mod/feedback, Umpan Balik Pelatihan). Bila semua
+        # aktivitas yang dinilai sudah completed, retry hanya membuang waktu.
+        if "Semua aktivitas sudah completed menurut API." in hasil:
+            cat("  Semua aktivitas completed menurut API; retry dihentikan.")
+            break
         status = m.alat_status_modul({"nama": nama})
         cat("  STATUS:", status)
-        if "SELESAI" in status:
+        if modul_selesai(status):
             break
         m.alat_buka_browser({"url": basis})
         time.sleep(jeda_ulang)

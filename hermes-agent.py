@@ -2527,8 +2527,8 @@ def _status_jawaban_scorm(frame, transkrip):
     except Exception:
         teks = ""
     gabung = (" ".join(narasi) + " " + teks).lower()
-    if re.search(r"tidak dapat membantu|kurang tepat|belum tepat|coba lagi|"
-                 r"\bsalah\b|\bmaaf\b", gabung):
+    if re.search(r"tidak dapat membantu|tidak tepat|tidak benar|kurang tepat|"
+                 r"belum tepat|coba lagi|\bsalah\b|\bmaaf\b", gabung):
         return False
     # Umpan balik benar pada paket Wadhwani memakai kata "Benar!" / "Tepat!",
     # bukan selalu "Bagus". Tanpa ini jawaban benar terbaca sebagai None dan
@@ -2569,10 +2569,15 @@ def _jawaban_scorm_dari_data(frame):
                             if (c) benar.push(c);
                         }
                     }
+                    const bersihId = v => String(v || '')
+                        .replace(/^choices\./, '').replace(/^choice_/, '');
                     out.push({
                         id: o.id || '', type: o.type || '', teks: o.lmstext || '',
-                        pilih: (o.choices || []).map(c => String(c.id || '')
-                            .replace(/^choices\./, '').replace(/^choice_/, '')),
+                        pilih: (o.choices || []).map(c => bersihId(c.id)),
+                        // Label tiap opsi (A/B/C untuk Pick One, 1..6 untuk urutan).
+                        // Dipakai untuk memilih dropdown Sequence Drop-down.
+                        pilih_label: Object.fromEntries((o.choices || []).map(c =>
+                            [bersihId(c.id), String(c.lmstext || '')])),
                         benar: benar
                     });
                 }
@@ -3043,10 +3048,14 @@ def _selesaikan_scorm(page):
         perlu_kembali = False
         maju_tanpa_jawaban = 0
         mulai_diklik = set()
+        riwayat_pickmany = {}  # tanda jawaban -> jumlah percobaan (anti-loop)
+        loop_berhenti = False
 
         start_video_diklik = False
         for _ in range(250):
             _tunggu_jika_dijeda()
+            if loop_berhenti:
+                break
             frame = _frame_scorm(page) or frame
             # Splash video Storyline: tombol tetap ada di DOM setelah diklik,
             # jadi cukup ditekan sekali di awal sebelum slide soal muncul.
@@ -3061,6 +3070,25 @@ def _selesaikan_scorm(page):
                 teks_dom = " ".join(frame.inner_text("body").split())
             except Exception:
                 break
+            # Teks soal Sequence Drop-down sering hanya ada di atribut
+            # data-represents dan #slide-label, bukan di innerText body.
+            # Gabungkan supaya jalur Sequence tidak terlewat dan Pick Many
+            # tidak salah terpicu pada slide yang sama.
+            try:
+                teks_seq = frame.evaluate(r"""() => {
+                    const bersih = s => (s||'').replace(/\s+/g,' ').trim();
+                    const rep = [...document.querySelectorAll('[data-represents]')]
+                        .filter(e => e.getBoundingClientRect().width > 0)
+                        .map(e => bersih(e.innerText || '') + ' ' +
+                                  bersih(e.getAttribute('data-represents') || ''));
+                    const lab = bersih((document.querySelector('#slide-label')||{}).innerText || '');
+                    return lab + ' ' + rep.join(' ');
+                }""") or ""
+            except Exception:
+                teks_seq = ""
+            if not isinstance(teks_seq, str):
+                teks_seq = str(teks_seq)
+            teks_sequence = teks_dom + " " + teks_seq
             teks = teks_dom + " " + ss("cek")
 
             # Tombol pembuka di dalam konten: 'MULAI' / 'play2.png' / 'Play'.
@@ -3480,12 +3508,124 @@ def _selesaikan_scorm(page):
                 interaksi += 1
                 continue
 
+            # Sequence Drop-down Storyline punya tombol "Rectangle 6" yang
+            # mudah salah dikenali sebagai Pick Many. Kunci data.js memberi
+            # urutan id opsi yang benar beserta label angkanya (lmstext).
+            seq_kunci = next((k for k in kunci
+                              if k.get("type") == "sequence" and k.get("benar")
+                              and k.get("id") not in dijawab), None)
+            if (seq_kunci and not cek_info and not radio_info and
+                    re.search(r"--Pilih--|Sequence Drop-down|urutan prioritas",
+                              teks_sequence, re.I)):
+                peta_label = seq_kunci.get("pilih_label") or {}
+                urutan = []
+                for i, cid in enumerate(seq_kunci.get("benar", [])):
+                    lab = str(peta_label.get(str(cid), "") or "").strip()
+                    urutan.append(lab or str(i + 1))
+                dropdown = frame.evaluate(r"""() => [...document.querySelectorAll('button.acc-button')]
+                    .filter(b => { const r = b.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0 && b.id &&
+                               !/^(Kirim|Coba lagi|Selesai)$/i.test(
+                                   (b.innerText || '').trim()); })
+                    .map(b => ({id: b.id, y: Math.round(b.getBoundingClientRect().y),
+                                x: Math.round(b.getBoundingClientRect().x)}))""") or []
+                dropdown.sort(key=lambda d: (d["y"], d["x"]))
+                if len(dropdown) >= len(urutan):
+                    ss("sequence-sebelum")
+                    print(datetime.now().strftime("%H:%M:%S") +
+                          f" [SCORM] Sequence Drop-down: {len(urutan)} dropdown, "
+                          f"urutan kunci -> {urutan}", flush=True)
+                    ok_semua = True
+                    for i, har in enumerate(urutan[:len(dropdown)]):
+                        frame.evaluate("""(id) => {
+                            const b = document.getElementById(id);
+                            if (!b) return;
+                            try { b.click(); } catch (e) {}
+                            for (const ev of ['pointerdown','mousedown','pointerup','mouseup','click'])
+                                try { b.dispatchEvent(new MouseEvent(
+                                    ev, {bubbles: true, cancelable: true})); } catch (e) {}
+                        }""", dropdown[i]["id"])
+                        time.sleep(0.5)
+                        frame = _frame_scorm(page) or frame
+                        dipilih = frame.evaluate(r"""(h) => {
+                            const bersih = s => (s||'').replace(/\s+/g,' ').trim();
+                            const target = bersih(h);
+                            const angka = parseInt(target, 10) || 1;
+                            const skip = /^(Kirim|Coba lagi|Selesai|SEBELUMNYA|SELANJUTNYA|Keluar)$/i;
+                            const semua = [...document.querySelectorAll(
+                              '.acc-button, button, .slide-object-stategroup, [role=option], li, .acc-text')]
+                              .filter(e => { const r = e.getBoundingClientRect();
+                                  return r.width > 0 && r.height > 0 && !e.disabled &&
+                                         !skip.test(bersih(e.innerText || '')); });
+                            let o = semua.find(e => /^\d+$/.test(target) &&
+                                           bersih(e.innerText || '') === target);
+                            if (!o) {
+                                const angkaOpsi = semua.filter(e => /^\d+$/.test(
+                                    bersih(e.innerText || '')));
+                                o = angkaOpsi[angka - 1] || semua[angka - 1];
+                            }
+                            if (o) {
+                                try { o.click(); } catch (e) {}
+                                for (const ev of ['pointerdown','mousedown','pointerup','mouseup','click'])
+                                    try { o.dispatchEvent(new MouseEvent(
+                                        ev, {bubbles: true, cancelable: true})); } catch (e) {}
+                                return bersih(o.innerText || '').slice(0, 40);
+                            }
+                            return null;
+                        }""", har)
+                        if not dipilih:
+                            ok_semua = False
+                            break
+                        time.sleep(0.35)
+                        frame = _frame_scorm(page) or frame
+                    if ok_semua:
+                        ss("sequence-sudah-pilih")
+                        frame.evaluate("""() => {
+                            const k = [...document.querySelectorAll('button.acc-button')]
+                              .find(x => /^Kirim$/i.test((x.innerText || '').trim()) &&
+                                         !x.disabled && x.getBoundingClientRect().width > 0);
+                            if (k) k.click();
+                        }""")
+                        time.sleep(2.5)
+                        frame = _frame_scorm(page) or frame
+                        ss("sequence-sesudah-kirim")
+
+                        def _cek_api_seq():
+                            try:
+                                mm = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
+                                return bool(mm) and _selesai_aktivitas(
+                                    _status_aktivitas_api(page, mm.group(1)))
+                            except Exception:
+                                return False
+
+                        st_seq = _status_jawaban_scorm(frame, transkrip)
+                        api_seq = _cek_api_seq()
+                        if not api_seq and st_seq is not True:
+                            for _ in range(4):
+                                time.sleep(1.5)
+                                frame = _frame_scorm(page) or frame
+                                st_seq = _status_jawaban_scorm(frame, transkrip)
+                                api_seq = _cek_api_seq()
+                                if api_seq or st_seq is True:
+                                    break
+                        if api_seq or st_seq is True:
+                            dijawab.add(seq_kunci.get("id"))
+                            interaksi += 1
+                            maju_tanpa_jawaban = 0
+                            perlu_kembali = bool(box_terakhir)
+                            continue
+                        print(datetime.now().strftime("%H:%M:%S") +
+                              " [SCORM] Sequence belum benar; coba jalur generik.",
+                              flush=True)
+
             # Pick Many berbasis tombol Storyline (bukan input.acc-checkbox).
             # Primer: kunci data.js (perilaku awal). Sekunder (PEMILIH_KEDUA):
             # deteksi jumlah opsi yang diminta + pemilihan model lokal saat kunci
             # kosong/tidak cocok, untuk kasus seperti 174223/174225/174227.
             opsi_tombol = []
-            if not cek_info and not radio_info:
+            if (not cek_info and not radio_info and
+                    not re.search(r"--Pilih--|Sequence Drop-down|urutan prioritas",
+                                  teks_sequence, re.I)):
                 opsi_tombol = frame.evaluate(r"""() => {
                     const tombol = [...document.querySelectorAll('button.acc-button')]
                         .filter(b => /^(Rectangle|Oval)\s+\d+$/.test(
@@ -3520,13 +3660,27 @@ def _selesaikan_scorm(page):
 
                     angka = lambda v: int(re.sub(r"\D", "", str(v)) or 0)
                     rencana = []
+                    norm = lambda s: re.sub(r"[^a-z0-9]", "", str(s or "").lower())
                     # Pilihan pertama: kunci data.js (perilaku awal GitHub).
+                    # Kunci Wadhwani berupa id opsi (mis. Rectangle6id...), bukan
+                    # selalu nomor urut, jadi cocokkan id/teks dulu sebelum angka.
                     for k in kunci:
                         if (k.get("type") not in ("multipleresponse", "multiplechoice")
                                 or not k.get("benar") or k.get("id") in dijawab):
                             continue
-                        indeks = [angka(v) - 1 for v in k.get("benar", [])]
-                        indeks = [i for i in indeks if 0 <= i < len(opsi_tombol)]
+                        indeks = []
+                        for v in k.get("benar", []):
+                            n = norm(v)
+                            i = next((j for j, o in enumerate(opsi_tombol)
+                                      if n and (n == norm(o.get("uid")) or
+                                                n == norm(o.get("id")) or
+                                                n in norm(o.get("teks")))), None)
+                            if i is None:
+                                ang = angka(v)
+                                if 1 <= ang <= len(opsi_tombol):
+                                    i = ang - 1
+                            if i is not None and i not in indeks:
+                                indeks.append(i)
                         if indeks and indeks not in [r[0] for r in rencana]:
                             rencana.append((indeks, "kunci data.js", k.get("id")))
                     # Pilihan kedua: model + peta transkrip saat kunci tidak ada.
@@ -3563,6 +3717,15 @@ def _selesaikan_scorm(page):
                             return False
 
                     for indeks, sumber, kid in rencana:
+                        tanda_pm = (label_saat_ini, tuple(sorted(indeks)))
+                        riwayat_pickmany[tanda_pm] = riwayat_pickmany.get(tanda_pm, 0) + 1
+                        if riwayat_pickmany[tanda_pm] >= 3:
+                            ss("pickmany-loop-berhenti")
+                            print(datetime.now().strftime("%H:%M:%S") +
+                                  " [SCORM] berhenti: jawaban pick-many sama 3x "
+                                  "tanpa progres API.", flush=True)
+                            loop_berhenti = True
+                            break
                         ss("pickmany-tombol-sebelum")
                         print(datetime.now().strftime("%H:%M:%S") +
                               f" [SCORM] Pick Many tombol: {len(opsi_tombol)} opsi, "
@@ -4986,12 +5149,13 @@ def alat_kerjakan_modul(arg):
             # Buka URL aktivitas langsung. Klik TOC tidak diandalkan karena
             # hanya grup aktif yang muncul dan iframe sering tidak ikut termuat.
             alat_buka_browser({"url": a["url"]})
-            time.sleep(12)
+            # Tunggu frame muncul, jangan tidur buta 12 detik: menghemat
+            # ~10 detik per aktivitas bila halaman cepat termuat.
             halaman = _pastikan_browser()
-            for _ in range(20):
+            for _ in range(30):
                 if len(_semua_frame(halaman)) > 1:
                     break
-                time.sleep(1)
+                time.sleep(0.5)
 
             butuh_unggah = False
             for f in _semua_frame(halaman):
@@ -5034,8 +5198,15 @@ def alat_kerjakan_modul(arg):
                     if info_refleksi:
                         _catat(log, "  " + info_refleksi)
 
-            time.sleep(4)
-            akhir = _status_aktivitas_api(page, a["instance"])
+            # Status API bisa tertunda beberapa detik setelah tombol Selesaikan
+            # ditekan (terjadi pada Pikirkan 1 / 174292: None padahal sudah benar).
+            # Polling dulu supaya tidak ada false negative yang membuang attempt.
+            akhir = None
+            for _ in range(8):
+                time.sleep(3)
+                akhir = _status_aktivitas_api(page, a["instance"])
+                if _selesai_aktivitas(akhir):
+                    break
             if _selesai_aktivitas(akhir):
                 _catat(log, f"  ✓ {a['nama']} selesai (API: {akhir}).")
                 berubah += 1
