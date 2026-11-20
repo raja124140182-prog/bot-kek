@@ -189,7 +189,8 @@ def tulis_hasil(entri):
 def tahap_scan(paksa):
     cache = {} if paksa else muat_json(CACHE, {})
     items = semua_lti()
-    cat("=== TAHAP SCAN ===", "total:", len(items), "| paksa:", paksa)
+    cat("=== TAHAP SCAN ===", "total:", len(items), "| paksa:", paksa,
+        "| faktor jaringan:", m._faktor_jaringan(page))
     hasil, dilihat, dilewati, terakhir = [], set(), 0, time.time()
     for i, (nama, a) in enumerate(items, 1):
         inst = a["instance"]
