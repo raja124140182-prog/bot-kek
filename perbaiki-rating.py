@@ -115,8 +115,21 @@ def semua_lti():
     return keluar
 
 
+def frame_aktivitas(halaman):
+    """Frame LTI dikenali dari URL /ltiPage ATAU dari adanya .rating-text."""
+    for fr in m._semua_frame(halaman):
+        if "/ltiPage" in (fr.url or ""):
+            return fr
+        try:
+            if fr.evaluate("() => document.querySelectorAll('.rating-text').length > 0"):
+                return fr
+        except Exception:
+            pass
+    return None
+
+
 def cari_frame_lti():
-    """Cari frame /ltiPage di halaman aktif DAN di tab lain."""
+    """Cari frame aktivitas di halaman aktif DAN di tab lain."""
     try:
         daftar = list(m._browser.pages) if getattr(m, "_browser", None) else []
     except Exception:
@@ -124,91 +137,36 @@ def cari_frame_lti():
     if not daftar:
         daftar = [m._pastikan_browser()]
     for p in daftar:
-        fr = next((x for x in m._semua_frame(p) if "/ltiPage" in (x.url or "")), None)
+        fr = frame_aktivitas(p)
         if fr:
             return p, fr
     return None, None
 
 
-def klik_aktivitas(halaman):
-    """Klik aktivitas seperti manusia (bukan sekadar goto/JS click)."""
-    pilihan = [
-        '.toc__is_active .activity-name-section',
-        '.toc-act-container .activity-name-section',
-        '.activity-name-section:has-text("Berkolaborasi")',
-        '.activity-card:has-text("Berkolaborasi")',
-        'text=Berkolaborasi',
-    ]
-    for selector in pilihan:
-        try:
-            loc = halaman.locator(selector).first
-            if loc.count() and loc.is_visible():
-                loc.click(timeout=8000)
-                cat("  klik aktivitas lewat:", selector)
-                return True
-        except Exception:
-            continue
-    return False
-
-
 def buka_lti(url):
-    """Buka aktivitas dengan klik asli, lalu tunggu frame /ltiPage."""
+    """Buka satu URL lalu tunggu launch LTI selesai.
+
+    HASIL DIAGNOSIS: frame /ltiPage muncul sekitar detik ke-15 jika halaman
+    dibiarkan. Klik/JS-click tambahan setelah navigasi membatalkan OIDC,
+    dan reloadAwal juga membatalkannya. Jadi: satu navigasi, tanpa klik,
+    tanpa reload, polling frame tiap detik.
+    """
     halaman = m._pastikan_browser()
     faktor = m._faktor_jaringan(halaman)
     inst = url.rsplit("/", 1)[-1]
-    batas_navigasi = int(60000 * min(2.5, faktor))
+    batas_navigasi = int(90000 * min(2.0, faktor))
     try:
         halaman.goto(url, wait_until="domcontentloaded", timeout=batas_navigasi)
     except Exception:
         pass
-    time.sleep(4)
-    klik_aktivitas(halaman)
-
-    batas_tunggu = int(180 * min(1.5, max(1.0, faktor)))
-    terakhir_berubah = time.time()
-    sebelumnya, sudah_reload = None, False
-    for detik in range(batas_tunggu):
+    for detik in range(1, 181):
         p, fr = cari_frame_lti()
         if fr:
-            halaman = p
-            return halaman, fr, faktor
-        urls = [x.url or "" for x in m._semua_frame(halaman)]
-        if urls != sebelumnya:
-            sebelumnya = urls
-            terakhir_berubah = time.time()
-            cat(f"  LTI {inst} detik {detik}: {[u[:95] for u in urls]}")
-        if detik and detik % 60 == 0:
+            cat(f"  LTI {inst}: frame muncul pada detik {detik}.")
+            return p, fr, faktor
+        if detik % 30 == 0:
             cat(f"  LTI {inst}: masih menunggu frame ({detik}s)")
-            m.status_aktif(f"Menunggu LTI {inst} ({detik}s, faktor {faktor})")
-        if time.time() - terakhir_berubah > 180 and not sudah_reload:
-            cat(f"  LTI {inst}: launch mandek 180s, muat ulang sekali.")
-            sudah_reload = True
-            try:
-                halaman.goto(url, wait_until="domcontentloaded",
-                             timeout=batas_navigasi)
-            except Exception:
-                pass
-            terakhir_berubah = time.time()
-        time.sleep(1)
-    for x in m._semua_frame(halaman):
-        try:
-            diklik = x.evaluate("""() => {
-                const e = [...document.querySelectorAll(
-                    '.activity-name, .activity-card, button, a')].find(n =>
-                    /Lihat Aktivitas/i.test((n.innerText || n.textContent || '')));
-                if (!e) return false;
-                (e.closest('.activity-card') || e).click();
-                return true;
-            }""")
-        except Exception:
-            diklik = False
-        if diklik:
-            for _ in range(120):
-                p, fr = cari_frame_lti()
-                if fr:
-                    return p, fr, faktor
-                time.sleep(1)
-            break
+            m.status_aktif(f"Menunggu LTI {inst} ({detik}s)")
     return halaman, None, faktor
 
 
