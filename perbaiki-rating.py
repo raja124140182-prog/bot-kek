@@ -338,4 +338,18 @@ def jalankan():
 
 
 if __name__ == "__main__":
-    jalankan()
+    try:
+        from kunci_bot import ambil as ambil_kunci, lepas as lepas_kunci
+    except ImportError:
+        ambil_kunci = lepas_kunci = None
+    if ambil_kunci:
+        boleh, pemilik = ambil_kunci("rating")
+        if not boleh:
+            cat("DILEWATI: bot lain sedang memakai browser:",
+                pemilik.get("nama"), "PID", pemilik.get("pid"))
+            raise SystemExit(0)
+    try:
+        jalankan()
+    finally:
+        if lepas_kunci:
+            lepas_kunci()
