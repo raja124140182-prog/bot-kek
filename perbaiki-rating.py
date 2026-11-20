@@ -281,6 +281,8 @@ def jalankan():
     paksa = "--paksa" in sys.argv
     cache = {} if paksa else muat_json(CACHE, {})
     items = semua_lti()
+    if "--uji" in sys.argv:
+        items = items[:2]
     cat("=== SCAN + KERJA PER AKTIVITAS ===", "total:", len(items),
         "| paksa:", paksa, "| faktor jaringan:", m._faktor_jaringan(page))
     hasil, gagal_berturut = [], 0
@@ -312,6 +314,23 @@ def jalankan():
             m.tampilkan_popup("Hermes menemui kendala",
                               "Frame LTI gagal 3x berturut. Perlu login ulang.")
             break
+    # Putaran kedua: jangan berhenti hanya karena putaran pertama gagal.
+    # Entri yang masih perlu dicoba lagi oleh proses yang sama sampai 2x.
+    for putaran in (1, 2):
+        belum = [(i, e) for i, e in enumerate(hasil)
+                 if e.get("perlu") and not e.get("kendala")]
+        if not belum:
+            break
+        cat(f"--- PUTARAN PERBAIKAN {putaran}: {len(belum)} aktivitas ---")
+        for i, e in belum:
+            a = {"instance": e["instance"], "url": e["url"], "nama": e["nama"],
+                 "pelajaran": e["pelajaran"], "modtype": "lti"}
+            baru, _ = proses_satu(a, i + 1, len(hasil))
+            hasil[i] = baru
+            cache[e["instance"]] = dict(baru)
+            simpan_json(CACHE, cache)
+            tulis_hasil(hasil)
+
     perlu = [e for e in hasil if e.get("perlu")]
     kendala = [e for e in hasil if e.get("kendala")]
     cat("SELESAI:", len(hasil), "aktivitas |", len(perlu), "perlu ditindaklanjuti |",

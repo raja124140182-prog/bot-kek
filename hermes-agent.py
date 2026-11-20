@@ -4931,10 +4931,18 @@ def _selesaikan_lti(page, hanya_rating=False):
     def ambil_frame():
         # Frame LTI bisa hilang sejenak setelah Kirim/navigasi; tunggu sebentar
         # supaya loop tidak berhenti lebih awal.
-        for _ in range(30):
-            f = next((x for x in _semua_frame(page) if "/ltiPage" in (x.url or "")), None)
-            if f:
-                return f
+        for giliran in range(60):
+            calon = [x for x in _semua_frame(page) if "/ltiPage" in (x.url or "")]
+            for f in calon:
+                try:
+                    if f.evaluate(
+                            "() => document.querySelectorAll('.rating-text').length > 0"):
+                        return f
+                except Exception:
+                    pass
+            # Frame ada tetapi kontennya belum termuat: tunggu rating muncul.
+            if calon and giliran >= 20:
+                return calon[0]
             time.sleep(0.5)
         # Aktivitas yang baru dibuka (notStarted) menampilkan frame pengarah
         # berisi kartu "Lihat Aktivitas". Klik kartu itu untuk meluncurkan
@@ -5313,6 +5321,9 @@ def _selesaikan_lti(page, hanya_rating=False):
                     time.sleep(1.5)
                     continue
                 tiles = baca_tiles(frame)
+                catatan.append(
+                    f"baca_tiles: {len(tiles)} tile, rating "
+                    f"{[t['rating'] for t in tiles][:8]}")
                 rendah = [t for t in tiles
                           if (rating_angka(t["rating"]) or 5) < 5
                           and percobaan.get(t["kunci"], 0) < MAKS_PERCOBAAN]
@@ -5442,7 +5453,7 @@ def _selesaikan_lti(page, hanya_rating=False):
     return (f"Kolaborasi LTI: {selesai} kartu dikerjakan, {perbaikan} ulangan rating, "
             f"sisa rating <5/5: {sisa_rating}. "
             f"Jawaban berbasis konteks aktivitas (model lokal + OCR tiap langkah). {ringkas}"
-            ) if (selesai or perbaikan or sisa_rating != 0) else ""
+            ) if (selesai or perbaikan or sisa_rating != 0 or catatan) else ""
 
 
 def _lewati_video_dan_keluar(page):
