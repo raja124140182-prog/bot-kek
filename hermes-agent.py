@@ -2591,16 +2591,24 @@ def _normal_id(nilai):
     return re.sub(r"[^a-z0-9]", "", str(nilai or "").lower()).lstrip("0") or "0"
 
 
+
+
 def _opsi_kuis_generik(frame):
     """Temukan opsi jawaban dari bentuk DOM apa pun dalam paket SCORM.
 
     Tidak bergantung pada satu bentuk: input.acc-radio, input.acc-checkbox,
-    tombol .acc-button bertanda Rectangle/Oval, atau elemen biasa yang punya
-    data-represents. Dipakai sebagai jalur terakhir sebelum bot menyerah.
+    tombol .acc-button bertanda Rectangle/Oval, elemen data-represents, atau
+    elemen Storyline (stategroup/vectorshape/dropdown) yang terlihat sebagai
+    kandidat jawaban. Dipakai sebagai jalur adaptif sebelum bot menyerah.
     """
     try:
-        return frame.evaluate(r"""() => {
+        hasil = frame.evaluate(r"""() => {
           const bersih = s => (s||'').replace(/\s+/g,' ').trim();
+          const vis = e => {
+            const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+            return r.width>0 && r.height>0 && g.display!=='none' &&
+                   g.visibility!=='hidden' && parseFloat(g.opacity||'1')>0.05;
+          };
           const teksSemua = [...document.querySelectorAll('.acc-text, label')];
 
           // 1) Radio/checkbox klasik.
@@ -2615,18 +2623,19 @@ def _opsi_kuis_generik(frame):
 
           // 2) Tombol .acc-button yang punya teks opsi di .acc-text.
           const tombol = [...document.querySelectorAll('button.acc-button')]
-            .filter(b => !b.disabled && b.getBoundingClientRect().width > 0);
+            .filter(b => !b.disabled && vis(b));
           const dariTombol = [];
           for (const b of tombol) {
             const uid = (b.id||'').replace(/^acc-/, '');
-            const label = bersih(b.innerText);
-            if (!uid || /^(Kirim|Kirim Jawaban|Submit|Selesai|OK|Keluar|Mulai ulang)$/i.test(label))
+            const label = bersih(b.innerText || b.getAttribute('aria-label') || '');
+            if (/^(Kirim|Kirim Jawaban|Submit|Selesai|OK|Keluar|Mulai ulang)$/i.test(label))
               continue;
+            if (!uid) continue;
             const t = teksSemua.find(x => {
               const rep = x.dataset.represents || '';
               const txt = bersih(x.innerText);
               return rep.includes(uid) && txt.length > 18 &&
-                     !/©|All Rights|Hak Cipta|slide:|^Kirim$|^Selesai$/i.test(txt);
+                     !/c|All Rights|Hak Cipta|slide:|^Kirim$|^Selesai$/i.test(txt);
             });
             if (t) dariTombol.push({uid: uid, id: uid, teks: bersih(t.innerText),
                                     sumber: 'tombol', multi: false});
@@ -2640,41 +2649,254 @@ def _opsi_kuis_generik(frame):
                 e.classList.contains('acc-text')) continue;
             const txt = bersih(e.innerText);
             if (txt.length < 18 || txt.length > 300) continue;
-            if (/©|All Rights|Hak Cipta|slide:|Pelajaran Selanjutnya/i.test(txt)) continue;
+            if (/c|All Rights|Hak Cipta|slide:|Pelajaran Selanjutnya/i.test(txt)) continue;
             const p = (e.dataset.represents||'').split('.').filter(Boolean);
             const uid = p[p.length-1] || '';
             if (!uid) continue;
             umum.push({uid: uid, id: uid, teks: txt, sumber: 'umum', multi: false});
           }
-          return umum;
+          if (umum.length >= 2) return umum;
+
+          // 4) Adaptif: opsi Storyline (mis. dropdown/tarik-turun, stategroup)
+          // yang terlihat sebagai kandidat jawaban.
+          const kandidat = [];
+          const els = [...document.querySelectorAll(
+            '.slide-object-stategroup, .slide-object-vectorshape, .acc-button, [role="option"], [role="radio"], [role="checkbox"]')];
+          for (const e of els) {
+            if (!vis(e) || e.disabled) continue;
+            const txt = bersih(e.innerText || e.getAttribute('aria-label') || '');
+            if (!txt || txt.length < 3 || txt.length > 160) continue;
+            if (/^(Kirim|Kirim Jawaban|Submit|Selesai|SELESAI|OK|Keluar|KELUAR|Lanjutkan|LANJUTKAN|Selanjutnya|SELANJUTNYA|Resume|Restart|Mulai|MULAI|MULAI LAGI|SEBELUMNYA|Sebelumnya|Coba lagi|Continue|Next)$/i.test(txt)) continue;
+            if (/^Pilih opsi|^Klik panah|^Klik di sini|Silakan klik ikon|Sisa Percobaan|down arrow|play2?\.png|^play$|^pause$|^reset$|mute|caption|full.?screen|putar ulang/i.test(txt)) continue;
+            if (/^\d+$/.test(txt)) continue;
+            if (/All Rights|Hak Cipta|Wadhwani|©|^slide:/i.test(txt)) continue;
+            const r = e.getBoundingClientRect();
+            if (r.width > 500 && r.height > 80) continue;
+            const id = (e.id||'').replace(/^acc-/, '');
+            kandidat.push({uid: id, id: id, teks: txt, sumber: 'adaptif',
+                           multi: false, x: Math.round(r.x), y: Math.round(r.y),
+                           w: Math.round(r.width), h: Math.round(r.height),
+                           cls: (e.className||'').toString().slice(0,80)});
+          }
+          const prior = o => (o.cls||'').includes('stategroup') ? 0 : ((o.cls||'').includes('acc-button') ? 1 : 2);
+          kandidat.sort((a,b)=> prior(a)-prior(b) || a.y-b.y);
+          const seen = new Set();
+          const uniq = [];
+          for (const k of kandidat) {
+            const key = k.teks.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            uniq.push(k);
+          }
+          if (uniq.length >= 2) {
+            const buckets = {};
+            for (const k of uniq) {
+              const bx = Math.round((k.x||0) / 40) * 40;
+              const bw = Math.round((k.w||0) / 40) * 40;
+              const key = bx + ',' + bw;
+              (buckets[key] = buckets[key] || []).push(k);
+            }
+            const cluster = Object.values(buckets).sort((a,b)=>b.length-a.length)[0] || [];
+            if (cluster.length >= 2) return cluster.sort((a,b)=>a.y-b.y);
+            if (uniq.length <= 8) return uniq;
+          }
+          return uniq.length >= 2 ? uniq : (umum.length ? umum : uniq);
         }""") or []
+        return hasil
     except Exception:
         return []
 
 
-def _klik_opsi_kuis(frame, opsi):
-    """Klik satu opsi hasil deteksi generik, apa pun bentuk elemennya."""
+def _klik_opsi_adaptif(frame, teks_opsi):
+    """Klik opsi SCORM/Storyline secara adaptif berdasarkan teks terlihat."""
+    teks_opsi = str(teks_opsi or "").strip()
+    if not teks_opsi:
+        return False
     try:
-        return frame.evaluate("""(o) => {
-          const id = String(o.uid||o.id||'').replace(/^acc-/, '');
-          if (!id) return false;
-          let e = document.getElementById('acc-' + id);
-          if (!e) e = [...document.querySelectorAll('[data-represents]')]
-              .find(x => (x.dataset.represents||'').includes(id) &&
-                         (x.innerText||'').trim().length > 3);
-          if (!e || e.disabled) return false;
-          if (e.tagName === 'INPUT') e.click();
-          else {
-            // Storyline sering butuh klik teks dan pembayangnya sekaligus.
-            e.click();
-            const bayang = [...document.querySelectorAll('.acc-text')]
-              .find(x => (x.dataset.represents||'').includes(id));
-            if (bayang && bayang !== e) bayang.click();
+        loc = frame.locator(
+            ".slide-object-stategroup, .slide-object-vectorshape, .acc-button, [role='option'], [data-represents], .acc-text"
+        ).filter(has_text=teks_opsi)
+        n = loc.count()
+        kandidat = []
+        for i in range(min(n, 12)):
+            try:
+                box = loc.nth(i).bounding_box()
+                vis = loc.nth(i).is_visible()
+                if vis and box:
+                    kandidat.append((i, box))
+            except Exception:
+                continue
+        kandidat.sort(key=lambda it: (
+            0 if (500 <= it[1].get('x', 0) <= 720 and 180 <= it[1].get('y', 0) <= 360) else 1,
+            it[1].get('y', 0)
+        ))
+        for i, _ in kandidat:
+            try:
+                loc.nth(i).click(timeout=1200, force=True)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        ok = frame.evaluate(r"""(t) => {
+          const bersih = s => (s||'').replace(/\s+/g,' ').trim();
+          const vis = e => {
+            const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+            return r.width>0 && r.height>0 && g.display!=='none' &&
+                   g.visibility!=='hidden' && parseFloat(g.opacity||'1')>0.05;
+          };
+          const target = bersih(t).toLowerCase();
+          const sels = ['.slide-object-stategroup','.slide-object-vectorshape',
+                        '.acc-button','button','[role="option"]','[role="radio"]',
+                        '[role="checkbox"]','[data-represents]','.acc-text','div','span'];
+          const cands = [];
+          for (const e of document.querySelectorAll(sels.join(','))) {
+            if (!vis(e) || e.disabled) continue;
+            const txt = bersih(e.innerText || e.getAttribute('aria-label') || '');
+            if (txt.toLowerCase() !== target) continue;
+            const r = e.getBoundingClientRect();
+            let s = 0;
+            if ((e.className||'').toString().includes('stategroup')) s -= 10;
+            if (r.x>=500 && r.x<=720 && r.y>=180 && r.y<=360) s -= 5;
+            else if (r.x>=300 && r.x<=750 && r.y>=150 && r.y<=380) s -= 2;
+            cands.push({e, s, y:r.y});
           }
-          return true;
-        }""", opsi)
+          cands.sort((a,b)=>a.s-b.s || a.y-b.y);
+          for (const c of cands.slice(0,4)) {
+            const e = c.e;
+            try { e.scrollIntoView({block:'center'}); } catch(ex){}
+            try { e.click(); } catch(ex){}
+            for (const ev of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+              try { e.dispatchEvent(new MouseEvent(ev,{bubbles:true,cancelable:true,view:window})); } catch(ex){}
+            }
+          }
+          return cands.length > 0;
+        }""", teks_opsi)
+        if ok:
+            return True
+    except Exception:
+        pass
+    for exact in (True, False):
+        try:
+            frame.get_by_text(teks_opsi, exact=exact).first.click(timeout=1200, force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _klik_kirim_adaptif(frame):
+    """Klik tombol/elemen Kirim atau Submit yang terlihat secara adaptif."""
+    try:
+        if frame.evaluate(r"""() => {
+            const vis = e => {
+                const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+                return r.width>0 && r.height>0 && g.display!=='none' &&
+                       g.visibility!=='hidden' && parseFloat(g.opacity||'1')>0.05;
+            };
+            for (const e of [...document.querySelectorAll('.acc-button, button, [role="button"], input[type=submit], input[type=button]')]) {
+                if (!vis(e) || e.disabled) continue;
+                const t=(e.innerText||e.value||e.getAttribute('aria-label')||'').trim();
+                if (/^(Kirim|Kirim Jawaban|Submit|Serahkan)$/i.test(t)) { e.click(); return true; }
+            }
+            return false;
+        }"""):
+            return True
+    except Exception:
+        pass
+    try:
+        if frame.evaluate(r"""() => {
+            const vis = e => {
+                const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+                return r.width>0 && r.height>0 && g.display!=='none' &&
+                       g.visibility!=='hidden' && parseFloat(g.opacity||'1')>0.05;
+            };
+            const els = [...document.querySelectorAll('.slide-object-stategroup, .slide-object-vectorshape, .slide-object, div, span')];
+            for (const e of els) {
+                if (!vis(e) || e.disabled) continue;
+                const t=(e.innerText||'').replace(/\s+/g,' ').trim();
+                if (!/^(Kirim|Kirim Jawaban|Submit)$/i.test(t)) continue;
+                e.click();
+                e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+                return true;
+            }
+            return false;
+        }"""):
+            return True
+    except Exception:
+        pass
+    for txt in ("Kirim", "Kirim Jawaban", "Submit"):
+        try:
+            frame.get_by_text(txt, exact=True).first.click(timeout=1000, force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _buka_dropdown_scorm(frame):
+    """Buka kontrol dropdown/tarik-turun Storyline jika ada (best-effort)."""
+    try:
+        return bool(frame.evaluate(r"""() => {
+            const vis = e => {
+                const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+                return r.width>0 && r.height>0 && g.display!=='none' &&
+                       g.visibility!=='hidden';
+            };
+            for (const e of document.querySelectorAll('.acc-button,button,[role="button"],[aria-label],.slide-object-stategroup,.slide-object-vectorshape')) {
+                if (e.disabled) continue;
+                const t=(e.innerText||e.getAttribute('aria-label')||'').trim();
+                if (/down arrow|panah bawah|Klik di sini untuk membuat pilihan/i.test(t)) {
+                    try { e.click(); } catch(ex){}
+                    try { e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})); } catch(ex){}
+                    return true;
+                }
+            }
+            for (const e of document.querySelectorAll('.slide-object-vectorshape,.slide-object-objgroup,.slide-object-stategroup')) {
+                if (!vis(e)) continue;
+                const t=(e.innerText||'').trim();
+                if (/Klik panah bawah untuk melihat opsi/i.test(t)) { e.click(); return true; }
+            }
+            return false;
+        }"""))
     except Exception:
         return False
+
+
+def _klik_opsi_kuis(frame, opsi):
+    """Klik satu opsi hasil deteksi generik, apa pun bentuk elemennya."""
+    teks = ""
+    if isinstance(opsi, dict):
+        teks = str(opsi.get("teks") or "").strip()
+    try:
+        ok = frame.evaluate("""(o) => {
+          const id = String((o && (o.uid||o.id)) || '').replace(/^acc-/, '');
+          if (id) {
+            let e = document.getElementById('acc-' + id);
+            if (!e) e = [...document.querySelectorAll('[data-represents]')]
+                .find(x => (x.dataset.represents||'').includes(id) &&
+                           (x.innerText||'').trim().length > 3);
+            if (e && !e.disabled) {
+              if (e.tagName === 'INPUT') e.click();
+              else {
+                e.click();
+                const bayang = [...document.querySelectorAll('.acc-text')]
+                  .find(x => (x.dataset.represents||'').includes(id));
+                if (bayang && bayang !== e) try { bayang.click(); } catch(ex){}
+              }
+              return true;
+            }
+          }
+          return false;
+        }""", opsi or {})
+        if ok:
+            return True
+    except Exception:
+        pass
+    if teks:
+        return _klik_opsi_adaptif(frame, teks)
+    return False
 
 
 def _selesaikan_scorm(page):
@@ -3441,16 +3663,69 @@ def _selesaikan_scorm(page):
 
 
             # Jalur adaptif terakhir: deteksi opsi dari bentuk DOM apa pun.
-            # Hanya dipakai bila jalur khusus tidak menemukan opsi, tapi teks
-            # halaman jelas meminta pilihan/jawaban. Ini yang menangani soal
-            # dengan format baru tanpa perlu menambah blok khusus terus-menerus.
-            if (not radio_info and not cek_info and not opsi_tombol and
-                    re.search(r"kirim|pilih|jawaban|sisa percobaan", teks_dom, re.I)):
+            # Dipakai bila jalur khusus tidak menemukan opsi, tapi halaman jelas
+            # meminta pilihan/jawaban. Menangani format baru (termasuk dropdown/
+            # tarik-turun Storyline) tanpa menambah blok khusus terus-menerus.
+            cue_tanya = (not radio_info and not cek_info and not opsi_tombol and
+                         re.search(r"kirim|pilih|jawaban|sisa percobaan|tarik.?turun|panah bawah",
+                                   teks_dom, re.I))
+            if cue_tanya:
+                # Dropdown/tarik-turun: buka dulu agar opsi terlihat
+                if re.search(r"tarik.?turun|panah bawah|Klik di sini untuk membuat pilihan",
+                             teks_dom, re.I):
+                    _buka_dropdown_scorm(frame)
+                    time.sleep(1.2)
+                    frame = _frame_scorm(page) or frame
+
                 generik = _opsi_kuis_generik(frame)
+                if len(generik) < 2 and re.search(r"tarik.?turun|panah bawah|down arrow",
+                                                  teks_dom, re.I):
+                    _buka_dropdown_scorm(frame)
+                    time.sleep(1.2)
+                    frame = _frame_scorm(page) or frame
+                    generik = _opsi_kuis_generik(frame)
+
                 if len(generik) >= 2:
+                    def _cek_api_generik():
+                        try:
+                            mm = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
+                            return bool(mm) and _selesai_aktivitas(
+                                _status_aktivitas_api(page, mm.group(1)))
+                        except Exception:
+                            return False
+
+                    def _feedback_salah_generik(fr):
+                        try:
+                            t = " ".join(fr.inner_text("body").split())
+                        except Exception:
+                            t = ""
+                        return bool(re.search(
+                            r"\bsalah\b|kurang tepat|belum tepat|tidak tepat|coba lagi|"
+                            r"maaf|jawaban.*belum|silakan coba",
+                            t, re.I))
+
+                    def _coba_lagi_generik(fr):
+                        try:
+                            if fr.evaluate("""() => {
+                                const b = [...document.querySelectorAll('.acc-button, button')]
+                                  .find(x => /^(Coba lagi|Coba Lagi)$/i.test((x.innerText||'').trim()) &&
+                                             x.getBoundingClientRect().width > 0 && !x.disabled);
+                                if (b) { b.click(); return true; } return false; }"""):
+                                return True
+                        except Exception:
+                            pass
+                        try:
+                            fr.get_by_text("Coba lagi", exact=True).first.click(timeout=800)
+                            return True
+                        except Exception:
+                            return False
+
+                    teks_opsi_g = [str(o.get("teks") or "").strip() for o in generik]
                     kandidat_g = [
                         k for k in kunci
                         if k.get("benar") and k.get("id") not in dijawab]
+
+                    # 1) Prioritas: kunci data.js (perilaku awal)
                     for k in kandidat_g:
                         indeks = []
                         for v in [str(x) for x in k.get("benar", [])]:
@@ -3470,33 +3745,17 @@ def _selesaikan_scorm(page):
                         ss("generik-sebelum")
                         print(datetime.now().strftime("%H:%M:%S") +
                               f" [SCORM] Opsi generik: {len(generik)} ditemukan, "
-                              f"pilih {[generik[i]['teks'][:45] for i in indeks]}",
+                              f"kunci data.js -> {[generik[i]['teks'][:45] for i in indeks]}",
                               flush=True)
                         for i in indeks:
                             _klik_opsi_kuis(frame, generik[i])
                             time.sleep(0.4)
                             frame = _frame_scorm(page) or frame
                         ss("generik-sudah-pilih")
-                        frame.evaluate("""() => {
-                            const b = [...document.querySelectorAll(
-                                '.acc-button, button, [role=button]')]
-                              .find(x => /^(Kirim|Kirim Jawaban|Submit)$/i.test(
-                                  (x.innerText || '').trim()) &&
-                                  !x.disabled && x.getBoundingClientRect().width > 0);
-                            if (b) b.click();
-                        }""")
+                        _klik_kirim_adaptif(frame)
                         time.sleep(2.5)
                         frame = _frame_scorm(page) or frame
                         ss("generik-sesudah-kirim")
-
-                        def _cek_api_generik():
-                            try:
-                                mm = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
-                                return bool(mm) and _selesai_aktivitas(
-                                    _status_aktivitas_api(page, mm.group(1)))
-                            except Exception:
-                                return False
-
                         api_g = _cek_api_generik()
                         status_g = _status_jawaban_scorm(frame, transkrip)
                         dijawab.add(k.get("id"))
@@ -3507,30 +3766,236 @@ def _selesaikan_scorm(page):
                             break
                         if status_g is False or not api_g:
                             ulangan += 1
-                            # Kunci bisa basi: geser indeks beberapa kali.
                             for geser in range(1, min(4, len(generik))):
                                 alt = [(i + geser) % len(generik) for i in indeks]
                                 if alt == indeks:
                                     continue
                                 ss("generik-ulang")
+                                _coba_lagi_generik(frame)
+                                time.sleep(1.0)
+                                frame = _frame_scorm(page) or frame
+                                if re.search(r"tarik.?turun|panah bawah", teks_dom, re.I):
+                                    _buka_dropdown_scorm(frame)
+                                    time.sleep(0.8)
+                                    frame = _frame_scorm(page) or frame
                                 for i in alt:
                                     _klik_opsi_kuis(frame, generik[i])
                                     time.sleep(0.4)
                                     frame = _frame_scorm(page) or frame
-                                frame.evaluate("""() => {
-                                    const b = [...document.querySelectorAll(
-                                        '.acc-button, button, [role=button]')]
-                                      .find(x => /^(Kirim|Kirim Jawaban|Submit)$/i.test(
-                                          (x.innerText || '').trim()) &&
-                                          !x.disabled && x.getBoundingClientRect().width > 0);
-                                    if (b) b.click();
-                                }""")
+                                _klik_kirim_adaptif(frame)
                                 time.sleep(2.5)
                                 frame = _frame_scorm(page) or frame
                                 api_g = _cek_api_generik()
                                 if api_g or _status_jawaban_scorm(frame, transkrip) is True:
                                     break
                         break
+                    else:
+                        # 2) Fallback adaptif (PEMILIH_KEDUA): model lokal + peta
+                        if PEMILIH_KEDUA:
+                            jumlah_g = 1
+                            m_jml = re.search(r"pilih\s+(dua|tiga|empat|lima|2|3|4|5)\b", teks_dom, re.I)
+                            if m_jml:
+                                jumlah_g = {"dua": 2, "tiga": 3, "empat": 4, "lima": 5}.get(
+                                    m_jml.group(1).lower(),
+                                    int(re.sub(r"\D", "", m_jml.group(1)) or 1))
+                            elif re.search(r"pilih\s+lebih\s+dari\s+satu|pilih\s+beberapa|pilih\s+semua\s+yang\s+(benar|sesuai|tepat)|centang\s+semua",
+                                           teks_dom, re.I):
+                                # multi-select eksplisit; hindari "pilih opsi yang tepat" (umum singular)
+                                jumlah_g = min(2, len(generik))
+                            jumlah_g = max(1, min(jumlah_g, len(generik)))
+
+                            if jumlah_g > 1:
+                                pilihan_model = _pilih_beberapa_opsi_scorm(
+                                    teks_dom, teks_opsi_g, transkrip, jumlah_g)
+                            else:
+                                pm = _pilih_opsi_scorm(teks_dom, teks_opsi_g, transkrip)
+                                pilihan_model = [pm] if pm else []
+
+                            def _idx_dari_teks(pil):
+                                norm = lambda s: re.sub(r"\s+", " ", str(s or "")).strip().lower()
+                                idxs = []
+                                for p in (pil or []):
+                                    p = str(p or "").strip()
+                                    if not p:
+                                        continue
+                                    i = next((n for n, t in enumerate(teks_opsi_g) if norm(t) == norm(p)), None)
+                                    if i is None:
+                                        try:
+                                            i = max(range(len(teks_opsi_g)),
+                                                    key=lambda n: difflib.SequenceMatcher(
+                                                        None, norm(p), norm(teks_opsi_g[n])).ratio())
+                                            if difflib.SequenceMatcher(
+                                                    None, norm(p), norm(teks_opsi_g[i])).ratio() < 0.25:
+                                                i = None
+                                        except Exception:
+                                            i = None
+                                    if i is not None and i not in idxs:
+                                        idxs.append(i)
+                                return idxs[:jumlah_g]
+
+                            idxs = _idx_dari_teks(pilihan_model)
+                            if not idxs:
+                                idxs = list(range(min(jumlah_g, len(generik))))
+
+                            print(datetime.now().strftime("%H:%M:%S") +
+                                  f" [SCORM] Opsi generik adaptif: {len(generik)} opsi, "
+                                  f"pilih {[teks_opsi_g[i][:45] for i in idxs]} "
+                                  f"(model+peta, pemilih kedua)",
+                                  flush=True)
+
+                            kid = f"generik-adaptif-{locals().get('sidik_radio') or locals().get('label_slide') or 'slide'}-{len(dijawab)}"
+                            sudah_komb = set()
+                            berhasil = False
+                            for perc in range(max(1, len(generik))):
+                                kmb = tuple(sorted(idxs))
+                                if kmb in sudah_komb:
+                                    break
+                                sudah_komb.add(kmb)
+                                ss(f"generik-adaptif-sebelum-{perc}")
+                                if re.search(r"tarik.?turun|panah bawah", teks_dom, re.I):
+                                    _buka_dropdown_scorm(frame)
+                                    time.sleep(0.8)
+                                    frame = _frame_scorm(page) or frame
+                                for i in idxs:
+                                    _klik_opsi_adaptif(frame, teks_opsi_g[i])
+                                    time.sleep(0.4)
+                                    frame = _frame_scorm(page) or frame
+                                ss(f"generik-adaptif-pilih-{perc}")
+                                _klik_kirim_adaptif(frame)
+                                time.sleep(2.5)
+                                frame = _frame_scorm(page) or frame
+                                ss(f"generik-adaptif-kirim-{perc}")
+
+                                api_g = _cek_api_generik()
+                                status_g = _status_jawaban_scorm(frame, transkrip)
+                                if not api_g and status_g is not True:
+                                    for _ in range(4):
+                                        time.sleep(1.2)
+                                        frame = _frame_scorm(page) or frame
+                                        api_g = _cek_api_generik()
+                                        status_g = _status_jawaban_scorm(frame, transkrip)
+                                        if api_g or status_g is True:
+                                            break
+
+                                if api_g or status_g is True:
+                                    dijawab.add(kid)
+                                    interaksi += 1
+                                    maju_tanpa_jawaban = 0
+                                    perlu_kembali = bool(box_terakhir)
+                                    berhasil = True
+                                    break
+
+                                if status_g is False or _feedback_salah_generik(frame):
+                                    ulangan += 1
+                                    # Jika ada tombol lanjut setelah feedback (termasuk saat
+                                    # percobaan habis / jawaban salah), lanjutkan dulu.
+                                    def _klik_lanjut_feedback(fr):
+                                        # Storyline slide elements sering perlu Playwright click(force)
+                                        label_re = re.compile(r"^(Lanjutkan|Lanjut|Selanjutnya|Berikutnya|Continue|Next|Coba lagi|Coba Lagi)$", re.I)
+                                        for sel in (".slide-object-vectorshape, .slide-object-stategroup, .slide-object",
+                                                    ".acc-button, button, [role='button']"):
+                                            try:
+                                                loc = fr.locator(sel).filter(has_text=label_re)
+                                                n = loc.count()
+                                                for i in range(min(n, 6)):
+                                                    try:
+                                                        if loc.nth(i).is_visible():
+                                                            loc.nth(i).click(timeout=1200, force=True)
+                                                            return True
+                                                    except Exception:
+                                                        continue
+                                            except Exception:
+                                                pass
+                                        for txt in ("Lanjutkan","Lanjut","Selanjutnya","Berikutnya","Continue","Next","Coba lagi"):
+                                            try:
+                                                fr.get_by_text(txt, exact=True).first.click(timeout=900, force=True)
+                                                return True
+                                            except Exception:
+                                                continue
+                                        # fallback JS + koordinat
+                                        try:
+                                            box = fr.evaluate(r"""() => {
+                                                const vis = e => { const r=e.getBoundingClientRect(), g=getComputedStyle(e);
+                                                  return r.width>0&&r.height>0&&g.display!=='none'&&g.visibility!=='hidden'&&parseFloat(g.opacity||'1')>0.05; };
+                                                const sels = ['.slide-object-vectorshape','.slide-object-stategroup','.slide-object','.acc-button','button','[role="button"]'];
+                                                for (const e of document.querySelectorAll(sels.join(','))) {
+                                                  if (!vis(e) || e.disabled) continue;
+                                                  const t=(e.innerText||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
+                                                  if (/^(Lanjutkan|Lanjut|Selanjutnya|Berikutnya|Continue|Next|Coba lagi|Coba Lagi)$/i.test(t)) {
+                                                    const r=e.getBoundingClientRect();
+                                                    try{e.click();}catch(ex){}
+                                                    for(const ev of ['pointerdown','mousedown','pointerup','mouseup','click']) try{e.dispatchEvent(new MouseEvent(ev,{bubbles:true,cancelable:true}));}catch(ex){}
+                                                    return {x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+                                                  }
+                                                }
+                                                return null; }""")
+                                            if box:
+                                                try:
+                                                    fr.mouse.click(box['x'], box['y'])
+                                                except Exception:
+                                                    pass
+                                                return True
+                                        except Exception:
+                                            pass
+                                        return False
+
+                                    # coba lagi eksplisit -> boleh ulang submit dengan opsi lain
+                                    if _coba_lagi_generik(frame):
+                                        time.sleep(1.2)
+                                        frame = _frame_scorm(page) or frame
+                                        if jumlah_g == 1:
+                                            for i in range(len(generik)):
+                                                if i not in idxs:
+                                                    idxs = [i]
+                                                    break
+                                            else:
+                                                idxs = [(idxs[0] + 1) % len(generik)]
+                                        else:
+                                            import itertools as _it
+                                            kandidat_komb = [list(c) for c in _it.combinations(range(len(generik)), jumlah_g)]
+                                            nxt = next((c for c in kandidat_komb if tuple(sorted(c)) not in sudah_komb), None)
+                                            if nxt is None:
+                                                break
+                                            idxs = nxt
+                                        continue
+
+                                    # tidak ada "Coba lagi": jika ada tombol Lanjutkan/dsb, klik dan lanjut
+                                    if _klik_lanjut_feedback(frame):
+                                        time.sleep(1.8)
+                                        frame = _frame_scorm(page) or frame
+                                        dijawab.add(kid)
+                                        interaksi += 1
+                                        maju_tanpa_jawaban = 0
+                                        perlu_kembali = bool(box_terakhir)
+                                        berhasil = True
+                                        break
+
+                                    # fallback: rotasi opsi jika masih bisa submit
+                                    time.sleep(1.0)
+                                    frame = _frame_scorm(page) or frame
+                                    if jumlah_g == 1:
+                                        for i in range(len(generik)):
+                                            if i not in idxs:
+                                                idxs = [i]
+                                                break
+                                        else:
+                                            idxs = [(idxs[0] + 1) % len(generik)]
+                                    else:
+                                        import itertools as _it
+                                        kandidat_komb = [list(c) for c in _it.combinations(range(len(generik)), jumlah_g)]
+                                        nxt = next((c for c in kandidat_komb if tuple(sorted(c)) not in sudah_komb), None)
+                                        if nxt is None:
+                                            break
+                                        idxs = nxt
+                                    continue
+                                # status tidak jelas: anggap interaksi dicoba agar tidak macet
+                                dijawab.add(kid)
+                                interaksi += 1
+                                maju_tanpa_jawaban = 0
+                                perlu_kembali = bool(box_terakhir)
+                                break
+                            if berhasil:
+                                break
 
             # Isi kolom jawaban bila ada
             if frame.evaluate("""() => {
@@ -3928,11 +4393,43 @@ def _selesaikan_lti(page):
     def ambil_frame():
         # Frame LTI bisa hilang sejenak setelah Kirim/navigasi; tunggu sebentar
         # supaya loop tidak berhenti lebih awal.
-        for _ in range(20):
+        for _ in range(30):
             f = next((x for x in _semua_frame(page) if "/ltiPage" in (x.url or "")), None)
             if f:
                 return f
             time.sleep(0.5)
+        # Aktivitas yang baru dibuka (notStarted) menampilkan frame pengarah
+        # berisi kartu "Lihat Aktivitas". Klik kartu itu untuk meluncurkan
+        # frame /ltiPage yang sebenarnya. Tanpa ini, percobaan pertama selalu
+        # gagal dan baru berhasil pada putaran berikutnya.
+        for x in _semua_frame(page):
+            try:
+                diklik = x.evaluate("""() => {
+                    const e = [...document.querySelectorAll(
+                        '.activity-name, .activity-card, button, a')].find(n =>
+                        /Lihat Aktivitas/i.test((n.innerText || n.textContent || '')));
+                    if (!e) return false;
+                    (e.closest('.activity-card') || e).click();
+                    return true;
+                }""")
+            except Exception:
+                diklik = False
+            if diklik:
+                for _ in range(60):
+                    f = next((y for y in _semua_frame(page)
+                              if "/ltiPage" in (y.url or "")), None)
+                    if f:
+                        return f
+                    time.sleep(0.5)
+                break
+        # Fallback: frame LTI dengan URL lain tetap diterima bila kartunya ada.
+        for y in _semua_frame(page):
+            try:
+                if y.evaluate("""() => !!document.querySelector(
+                        '.activity-card, .activity-completion-section, .gen-ai-card')"""):
+                    return y
+            except Exception:
+                continue
         return None
 
     frame = ambil_frame()
