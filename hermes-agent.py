@@ -743,6 +743,78 @@ def _semua_frame(page):
         return [page]
 
 
+_FAKTOR_JARINGAN = 1.0
+
+
+def _info_jaringan(page=None):
+    """Ukur kualitas jaringan langsung dari browser (tanpa alat eksternal)."""
+    try:
+        p = page or _pastikan_browser()
+        dat = p.evaluate("""() => {
+            const c = navigator.connection || navigator.mozConnection ||
+                      navigator.webkitConnection || {};
+            const n = performance.getEntriesByType('navigation')[0] || {};
+            return {
+                rtt: c.rtt == null ? null : c.rtt,
+                downlink: c.downlink == null ? null : c.downlink,
+                eff: c.effectiveType || '',
+                dur: n.duration || 0,
+                resp: (n.responseEnd && n.requestStart)
+                      ? n.responseEnd - n.requestStart : 0,
+            };
+        }""")
+        return dat if isinstance(dat, dict) else {}
+    except Exception:
+        return {}
+
+
+def _faktor_jaringan(page=None):
+    """Faktor waktu tunggu adaptif: 0.7 (cepat) sampai 3.0 (lambat).
+
+    Dibaca ulang tiap aktivitas, jadi langsung menyesuaai bila user
+    berpindah jaringan. Nilainya dirata-ratakan supaya tidak berubah-ubah.
+    """
+    global _FAKTOR_JARINGAN
+    dat = _info_jaringan(page)
+    faktor = 1.0
+    eff = str(dat.get("eff") or "").lower()
+    if eff in ("slow-2g", "2g"):
+        faktor = 2.8
+    elif eff == "3g":
+        faktor = 1.8
+    try:
+        rtt = float(dat.get("rtt") or 0)
+        if rtt > 300:
+            faktor = max(faktor, 2.6)
+        elif rtt > 150:
+            faktor = max(faktor, 1.8)
+        elif 0 < rtt < 60:
+            faktor = min(faktor, 0.9)
+    except Exception:
+        pass
+    try:
+        downlink = float(dat.get("downlink") or 0)
+        if 0 < downlink < 1.5:
+            faktor = max(faktor, 2.4)
+        elif 0 < downlink < 5:
+            faktor = max(faktor, 1.5)
+        elif downlink > 10:
+            faktor = min(faktor, 0.8)
+    except Exception:
+        pass
+    try:
+        resp = float(dat.get("resp") or 0)
+        if resp > 2000:
+            faktor = max(faktor, 2.2)
+        elif resp > 800:
+            faktor = max(faktor, 1.5)
+    except Exception:
+        pass
+    faktor = max(0.7, min(3.0, faktor))
+    _FAKTOR_JARINGAN = round(0.7 * _FAKTOR_JARINGAN + 0.3 * faktor, 2)
+    return _FAKTOR_JARINGAN
+
+
 def _cuplikan_halaman(page, maks=1200):
     """Ambil teks isi halaman termasuk isi iframe (dipadatkan) untuk dibaca model."""
     try:

@@ -83,29 +83,71 @@ def semua_lti():
 
 
 def buka_lti(url):
-    """Navigasi cepat: jangan tunggu networkidle (SPA sering tidak pernah idle)."""
+    """Buka aktivitas dengan waktu tunggu yang mengikuti kecepatan jaringan."""
     halaman = m._pastikan_browser()
-    try:
-        halaman.goto(url, wait_until="domcontentloaded", timeout=45000)
-    except Exception:
-        return halaman, None
-    for _ in range(60):
-        halaman = m._pastikan_browser()
-        fr = next((x for x in m._semua_frame(halaman)
-                   if "/ltiPage" in (x.url or "")), None)
-        if fr:
-            return halaman, fr
-        time.sleep(0.5)
-    return halaman, None
+    faktor = m._faktor_jaringan(halaman)
+    tunggu = min(60, max(25, int(50 * faktor)))  # detik per percobaan (dibatasi)
+    batas_navigasi = int(45000 * min(2.5, faktor))
+    for percobaan in range(2):
+        try:
+            halaman.goto(url, wait_until="domcontentloaded", timeout=batas_navigasi)
+        except Exception:
+            pass
+        for _ in range(tunggu * 2):
+            halaman = m._pastikan_browser()
+            fr = next((x for x in m._semua_frame(halaman)
+                       if "/ltiPage" in (x.url or "")), None)
+            if fr:
+                return halaman, fr, faktor
+            time.sleep(0.5)
+        if percobaan == 0:
+            cat(f"  faktor jaringan {faktor}: frame belum muncul, muat ulang sekali.")
+            m.status_aktif(f"Jaringan faktor {faktor}; memuat ulang aktivitas")
+    # Sama seperti fungsi utama: kartu "Lihat Aktivitas" kadang perlu diklik
+    # supaya frame /ltiPage benar-benar diluncurkan.
+    for x in m._semua_frame(halaman):
+        try:
+            diklik = x.evaluate("""() => {
+                const e = [...document.querySelectorAll(
+                    '.activity-name, .activity-card, button, a')].find(n =>
+                    /Lihat Aktivitas/i.test((n.innerText || n.textContent || '')));
+                if (!e) return false;
+                (e.closest('.activity-card') || e).click();
+                return true;
+            }""")
+        except Exception:
+            diklik = False
+        if diklik:
+            for _ in range(tunggu * 2):
+                fr = next((y for y in m._semua_frame(m._pastikan_browser())
+                           if "/ltiPage" in (y.url or "")), None)
+                if fr:
+                    return m._pastikan_browser(), fr, faktor
+                time.sleep(0.5)
+            break
+    return halaman, None, faktor
 
 
-def baca_rating(fr):
+def baca_rating(fr, faktor=1.0):
+    """Baca rating dengan sabar: frame /ltiPage butuh waktu sampai siap."""
     if not fr:
         return [], -1
-    try:
-        ratings = fr.evaluate("""() => [...document.querySelectorAll('.rating-text')]
-            .map(e => (e.innerText||'').replace(/\\s+/g,' ').trim())""")
-    except Exception:
+    ratings = []
+    for _ in range(min(14, max(6, int(8 * faktor)))):
+        try:
+            try:
+                fr.wait_for_selector(".rating-text",
+                                     timeout=int(2500 * min(2, faktor)))
+            except Exception:
+                pass
+            ratings = fr.evaluate("""() => [...document.querySelectorAll('.rating-text')]
+                .map(e => (e.innerText||'').replace(/\\s+/g,' ').trim())""")
+        except Exception:
+            ratings = []
+        if ratings:
+            break
+        time.sleep(1)
+    if not ratings:
         return [], -1
     rendah = 0
     for r in ratings:
@@ -172,8 +214,8 @@ def tahap_scan(paksa):
             continue
         m.status_aktif(f"Memindai rating LTI {i}/{len(items)}: {inst}")
         try:
-            _, frame = buka_lti(a["url"])
-            ratings, rendah = baca_rating(frame)
+            _, frame, faktor = buka_lti(a["url"])
+            ratings, rendah = baca_rating(frame, faktor)
             status = m._status_aktivitas_api(m._pastikan_browser(), inst)
             e = entri_baru(a, ratings, rendah, status)
             e["percobaan"] = (lama or {}).get("percobaan", 0) or 0
@@ -212,15 +254,15 @@ def tahap_kerja(hasil):
             try:
                 m.status_aktif(f"Mengerjakan {i}/{len(butuh)}: {inst} "
                                f"(status={e['status']}, rating={e['ratings']})")
-                halaman, frame = buka_lti(url)
+                halaman, frame, faktor = buka_lti(url)
                 if not frame:
                     cat(f"  {inst}: frame tidak termuat, dicoba lagi siklus berikutnya.")
                     continue
                 hanya_rating = selesai(e["status"]) and (e["rendah"] or 0) > 0
                 hasil_teks = m._selesaikan_lti(halaman, hanya_rating=hanya_rating)
                 cat(f"  {inst}: {(hasil_teks or 'tanpa perubahan')[:300]}")
-                _, frame2 = buka_lti(url)
-                ratings2, rendah2 = baca_rating(frame2)
+                _, frame2, faktor2 = buka_lti(url)
+                ratings2, rendah2 = baca_rating(frame2, faktor2)
                 status2 = m._status_aktivitas_api(m._pastikan_browser(), inst)
                 e.update({
                     "waktu": datetime.now().isoformat(timespec="seconds"),
