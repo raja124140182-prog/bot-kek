@@ -558,6 +558,11 @@ def tampilkan_popup(judul, pesan):
     _MINI_POPUP.tampilkan(judul, pesan)
 
 
+def status_aktif(teks):
+    """Perbarui jendela mini dengan kegiatan bot saat ini."""
+    tampilkan_popup("Hermes sedang bekerja", teks)
+
+
 def _tunggu_jika_dijeda():
     """Tahan aksi bot selama pengguna menekan tombol Jeda di jendela mini."""
     if not _JEDA.is_set():
@@ -2067,7 +2072,10 @@ def _tanyakan_jawaban(soal, opsi):
     ]
 
     pilihan = []
-    for pesan, suhu in pemeriksaan:
+    for nomor_pemeriksaan, (pesan, suhu) in enumerate(pemeriksaan, 1):
+        tampilkan_popup(
+            "Hermes memilih jawaban",
+            f"Pemeriksaan {nomor_pemeriksaan}/3 | Soal: {str(soal)[:100]}")
         try:
             jawab = panggil_model(pesan, suhu=suhu)
         except Exception:
@@ -2078,11 +2086,15 @@ def _tanyakan_jawaban(soal, opsi):
     if not pilihan:
         print(f"[KUIS] Tidak ada jawaban terbaca; pakai opsi pertama: {opsi[0][:60]}",
               flush=True)
+        tampilkan_popup("Hermes menemui kendala",
+                        "Jawaban model tidak terbaca; memakai opsi pertama.")
         return opsi[0]
     hitung = Counter(pilihan)
     terbaik, jumlah = hitung.most_common(1)[0]
     print(f"[KUIS] {str(soal)[:68]}... -> {terbaik[:55]} "
           f"(setuju {jumlah}/{len(pilihan)})", flush=True)
+    tampilkan_popup("Hermes memilih jawaban",
+                    f"Terpilih: {terbaik[:110]} (setuju {jumlah}/{len(pilihan)})")
     return terbaik
 
 
@@ -5119,6 +5131,7 @@ def _selesaikan_lti(page, hanya_rating=False):
                 kunci = target_kartu["kunci"]
                 dicoba.add(kunci)
                 nomor_siswa = 1 + (selesai % 4)
+                status_aktif(f"Mengerjakan kartu {kunci} (kartu ke-{selesai + 1})")
 
                 frame.evaluate("(i) => { const e = document.querySelectorAll('.activity-card')[i]; if (e) e.click(); }",
                                target_kartu["i"])
@@ -5216,9 +5229,12 @@ def _selesaikan_lti(page, hanya_rating=False):
                           if (rating_angka(t["rating"]) or 5) < 5
                           and percobaan.get(t["kunci"], 0) < MAKS_PERCOBAAN]
                 if not rendah:
+                    status_aktif(f"Memindai rating: {len(tiles)} tile, semua sudah 5/5.")
                     break
                 t = rendah[0]
                 kunci = t["kunci"]
+                status_aktif(f"Mengulang rating {kunci}: {t['rating']} -> target 5/5 "
+                             f"(percobaan {percobaan.get(kunci, 0) + 1}/4)")
                 percobaan[kunci] = percobaan.get(kunci, 0) + 1
                 frame.evaluate("""(i)=>{
                     const e=document.querySelectorAll('.activity-completion-section')[i];
@@ -5314,6 +5330,7 @@ def _selesaikan_lti(page, hanya_rating=False):
                     time.sleep(1.5)
                 if rating_baru:
                     catatan[-1] += f" -> rating {rating_baru}"
+                    status_aktif(f"Hasil rating {kunci}: {rating_baru}")
             except Exception as e:
                 catatan.append(f"tile {putaran_tile}: error {type(e).__name__} {e}")
                 time.sleep(1.5)
@@ -5444,12 +5461,14 @@ def _klik_mulai_kuis(page):
 
 def _selesaikan_quiz(page):
     """Buka attempt kuis bila perlu lalu jawab semua soal sampai selesai."""
+    status_aktif("Membuka kuis dan menunggu attempt Moodle termuat.")
     for _ in range(4):
         if _frame_attempt(page):
             break
         tombol = _klik_mulai_kuis(page)
         if not tombol:
             break
+        status_aktif(f"Kuis dimulai lewat tombol: {tombol[:70]}")
         for _ in range(25):
             time.sleep(0.6)
             if _frame_attempt(page):
@@ -5548,6 +5567,7 @@ def alat_kerjakan_modul(arg):
                 continue
             _catat(log, f"  {a['pelajaran']} > {a['grup']} / {a['nama']} "
                         f"({a['modtype']}, {st}) -> {a['instance']}")
+            status_aktif(f"Membuka {a['instance']}: {a['pelajaran']} / {a['nama']}")
             # Buka URL aktivitas langsung. Klik TOC tidak diandalkan karena
             # hanya grup aktif yang muncul dan iframe sering tidak ikut termuat.
             alat_buka_browser({"url": a["url"]})

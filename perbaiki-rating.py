@@ -83,7 +83,8 @@ def selesai(status):
     return str(status or "").lower().startswith("completed")
 
 
-def proses(inst, url,estimasi=""):
+def proses(inst, url, estimasi=""):
+    m.status_aktif(f"Memindai rating Berkolaborasi {inst} {estimasi}")
     halaman, frame = buka_lti(url)
     ratings, rendah = baca_rating(frame)
     status = m._status_aktivitas_api(m._pastikan_browser(), inst)
@@ -96,12 +97,15 @@ def proses(inst, url,estimasi=""):
     hanya_rating = selesai(status) and rendah > 0
     cat(f"{inst} | status={status} rating={ratings} -> "
         f"{'perbaiki rating' if hanya_rating else 'kerjakan aktivitas'} {estimasi}")
+    m.status_aktif(f"{'Mengulang rating' if hanya_rating else 'Mengerjakan'} {inst}: "
+                   f"{ratings} {estimasi}")
     hasil = m._selesaikan_lti(halaman, hanya_rating=hanya_rating)
     cat("  hasil:", (hasil or "tidak ada perubahan")[:450])
     halaman2, frame2 = buka_lti(url)
     ratings2, rendah2 = baca_rating(frame2)
     status2 = m._status_aktivitas_api(m._pastikan_browser(), inst)
     cat(f"{inst} | sesudah status={status2} rating={ratings2}")
+    m.status_aktif(f"Hasil {inst}: status={status2}, rating={ratings2}")
     return (not selesai(status2) or rendah2 > 0), status2, ratings2
 
 
@@ -125,6 +129,7 @@ def jalankan():
                     tersisa.append((inst, url))
             except Exception as e:
                 cat(f"  {inst}: ERROR {type(e).__name__} {e}")
+                m.tampilkan_popup("Hermes menemui kendala", f"{inst}: {type(e).__name__} {e}")
                 tersisa.append((inst, url))
         # Setelah status beres, cek semua LTI untuk rating <5/5.
         if not tersisa and siklus == 1:
@@ -133,6 +138,7 @@ def jalankan():
                 inst = a["instance"]
                 if any(x[0] == inst for x in tersisa):
                     continue
+                m.status_aktif(f"Memindai rating LTI {i}/{len(items)}: {inst}")
                 try:
                     halaman, frame = buka_lti(a["url"])
                     ratings, rendah = baca_rating(frame)
@@ -145,6 +151,8 @@ def jalankan():
                         cat(f"  cek rating {i}/{len(items)} ...")
                 except Exception as e:
                     cat(f"  {inst}: ERROR cek rating {type(e).__name__} {e}")
+                    m.tampilkan_popup("Hermes menemui kendala",
+                                      f"Rating {inst}: {type(e).__name__} {e}")
                     tersisa.append((inst, a["url"]))
         if not tersisa:
             cat("SEMUA BERKOLABORASI LULUS DAN RATING 5/5.")

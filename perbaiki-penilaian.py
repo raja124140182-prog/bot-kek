@@ -117,6 +117,13 @@ def semua_kuis():
 
 def jalankan():
     daftar = semua_kuis()
+    try:
+        nama_modul = list(dict.fromkeys(
+            q["modul"] for q in daftar if "penilaian" in q["modul"].lower()))
+        (FOLDER / "modul-penilaian.txt").write_text(
+            "\n".join(nama_modul) + "\n", encoding="utf-8")
+    except Exception:
+        pass
     cat("TOTAL KUIS/PENILAIAN:", len(daftar))
     for q in daftar:
         cat(f"  {q['instance']} | {q['status']} | sisa attempt "
@@ -135,6 +142,8 @@ def jalankan():
                 halaman.goto(q["url"], wait_until="domcontentloaded", timeout=45000)
                 time.sleep(2)
                 cat(f"[{i}/{len(sasaran)}] {q['instance']} {q['nama']}")
+                m.status_aktif(f"Mengerjakan penilaian {i}/{len(sasaran)}: "
+                               f"{q['instance']} {q['nama'][:60]}")
                 hasil = m._selesaikan_quiz(halaman)
                 cat("  ", (hasil or "tidak ada soal attempt yang dikerjakan")[:500])
                 st = m._status_aktivitas_api(m._pastikan_browser(), q["instance"])
@@ -147,10 +156,13 @@ def jalankan():
                 if (m._selesai_aktivitas(st) or
                         (nilai is not None and nilai >= 90)):
                     cat("  AMAN: kuis lulus / nilai minimal tercapai; attempt disimpan.")
+                    m.status_aktif(f"Penilaian {q['instance']} aman (nilai {nilai}%)")
                 else:
                     tersisa.append(q)
             except Exception as e:
                 cat(f"  ERROR {type(e).__name__}: {e}")
+                m.tampilkan_popup("Hermes menemui kendala",
+                                  f"Penilaian {q['instance']}: {type(e).__name__} {e}")
                 tersisa.append(q)
         if not tersisa:
             cat("SEMUA KUIS/PENILAIAN SELESAI.")
