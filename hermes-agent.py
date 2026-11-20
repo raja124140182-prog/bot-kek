@@ -4980,6 +4980,45 @@ def _selesaikan_lti(page, hanya_rating=False):
                 continue
         return None
 
+    def gulir(fr=None):
+        """Gulir halaman induk DAN semua kontainer di dalam frame.
+
+        window.scrollTo() di dalam iframe tidak menggeser halaman induk, dan
+        konten Storyline sering memakai div bert overflow sendiri. Keduanya
+        harus digulir supaya tombol benar-benar terlihat, bukan sekadar ada
+        di DOM.
+        """
+        try:
+            page.evaluate("""() => {
+                window.scrollTo(0, document.body.scrollHeight);
+                document.querySelectorAll('*').forEach(e => {
+                    if (e.scrollHeight > e.clientHeight + 30 &&
+                        getComputedStyle(e).overflowY !== 'visible') {
+                        e.scrollTop = e.scrollHeight;
+                    }
+                });
+                const f = document.querySelector('iframe.activity-frame') ||
+                          document.querySelector('iframe');
+                if (f) f.scrollIntoView({block: 'end'});
+            }""")
+        except Exception:
+            pass
+        fr = fr or frame
+        if not fr:
+            return
+        try:
+            fr.evaluate("""() => {
+                window.scrollTo(0, document.body.scrollHeight);
+                document.querySelectorAll('*').forEach(e => {
+                    if (e.scrollHeight > e.clientHeight + 30 &&
+                        getComputedStyle(e).overflowY !== 'visible') {
+                        e.scrollTop = e.scrollHeight;
+                    }
+                });
+            }""")
+        except Exception:
+            pass
+
     frame = ambil_frame()
     if not frame:
         return ""
@@ -5389,11 +5428,7 @@ def _selesaikan_lti(page, hanya_rating=False):
                 # mengerjakan ulang langkah aktivitas. Yang dicari hanya
                 # "Lihat Aktivitas" pada tile yang ratingnya rendah.
                 # Tombol bisa berada di bawah lipatan, jadi scroll dulu.
-                frame.evaluate("""() => {
-                    window.scrollTo(0, document.body.scrollHeight);
-                    const e = document.scrollingElement;
-                    if (e) e.scrollTop = e.scrollHeight;
-                }""")
+                gulir(frame)
                 time.sleep(1)
                 rating_tile = str(t.get("rating") or "").strip()
                 diklik = frame.evaluate("""(rating) => {
@@ -5419,24 +5454,34 @@ def _selesaikan_lti(page, hanya_rating=False):
                     jepret("tile-lihat-aktivitas")
                     time.sleep(3)
                     frame = ambil_frame() or frame
-                    frame.evaluate("""() => {
-                        window.scrollTo(0, document.body.scrollHeight);
-                        const e = document.scrollingElement;
-                        if (e) e.scrollTop = e.scrollHeight;
-                    }""")
+                    gulir(frame)
                     time.sleep(0.8)
                     # Detail aktivitas menampilkan tombol "Cobalah Latihan"
-                    # untuk masuk ke sesi refleksi/penilaian ulang.
-                    latihan = frame.evaluate("""() => {
-                        const e=[...document.querySelectorAll('button, a, div, span')]
-                          .find(x => x.getBoundingClientRect().width > 0 &&
-                                     /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
-                        if (!e) return '';
-                        const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
-                        e.scrollIntoView({block:'center'});
-                        (e.closest('button, a') || e).click();
-                        return teks;
-                    }""")
+                    # untuk masuk ke sesi refleksi/penilaian ulang. Tombol ini
+                    # bisa muncul setelah render, jadi tunggu beberapa putaran.
+                    latihan = ""
+                    for _n in range(20):
+                        gulir(frame)
+                        latihan = frame.evaluate("""() => {
+                            const e=[...document.querySelectorAll('button, a, div, span')]
+                              .find(x => x.getBoundingClientRect().width > 0 &&
+                                         /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
+                            if (!e) return '';
+                            const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                            e.scrollIntoView({block:'center'});
+                            (e.closest('button, a') || e).click();
+                            return teks;
+                        }""")
+                        if latihan:
+                            break
+                        time.sleep(1)
+                        frame = ambil_frame() or frame
+                    if not latihan:
+                        try:
+                            akhir = " ".join(frame.inner_text("body").split())[-300:]
+                        except Exception:
+                            akhir = ""
+                        catatan.append("tombol Cobalah Latihan TIDAK ditemukan | " + akhir)
                     if latihan:
                         catatan.append("klik " + latihan)
                         jepret("tile-cobalah-latihan")
@@ -5464,13 +5509,7 @@ def _selesaikan_lti(page, hanya_rating=False):
                 status_aktif(f"{kunci}: mencari tombol Refleksikan aktivitasnya")
                 refleksi_mulai = ""
                 for _n in range(30):
-                    frame.evaluate("""() => {
-                        for (let i = 0; i < 4; i++) {
-                            window.scrollTo(0, document.body.scrollHeight);
-                            const e = document.scrollingElement;
-                            if (e) e.scrollTop = e.scrollHeight;
-                        }
-                    }""")
+                    gulir(frame)
                     time.sleep(0.7)
                     refleksi_mulai = frame.evaluate("""() => {
                         const e=[...document.querySelectorAll('button, a, div, span')]
@@ -5497,7 +5536,11 @@ def _selesaikan_lti(page, hanya_rating=False):
                         except Exception:
                             pass
                 else:
-                    catatan.append("tombol Refleksikan aktivitasnya TIDAK ditemukan")
+                    try:
+                        akhir = " ".join(frame.inner_text("body").split())[-300:]
+                    except Exception:
+                        akhir = ""
+                    catatan.append("tombol Refleksikan aktivitasnya TIDAK ditemukan | " + akhir)
 
                 for _langkah in range(50):
                     _tunggu_jika_dijeda()
