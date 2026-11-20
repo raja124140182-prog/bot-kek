@@ -5375,6 +5375,27 @@ def _selesaikan_lti(page, hanya_rating=False):
                     }""")
                     time.sleep(2.5)
                     jepret("tile-mengulang")
+                else:
+                    # Hasil OCR tile-detail: yang tampil bukan tombol "Mengulang",
+                    # melainkan daftar "Lihat Aktivitas". Klik salah satu untuk
+                    # membuka kembali refleksi aktivitas yang ratingnya rendah.
+                    diklik = frame.evaluate("""() => {
+                        const e=[...document.querySelectorAll('button, a, div, span')]
+                          .find(x => x.getBoundingClientRect().width > 0 &&
+                                     /Lihat Aktivitas/i.test(x.innerText || '') &&
+                                     (x.innerText || '').trim().length < 40);
+                        if (!e) return '';
+                        const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                        (e.closest('button, a') || e).click();
+                        return teks;
+                    }""")
+                    if diklik:
+                        catatan.append("klik Lihat Aktivitas: " + diklik)
+                        jepret("tile-lihat-aktivitas")
+                        time.sleep(3)
+                        frame = ambil_frame() or frame
+                    else:
+                        catatan.append("tidak ada tombol Mengulang/Lihat Aktivitas")
 
                 for _langkah in range(50):
                     _tunggu_jika_dijeda()
