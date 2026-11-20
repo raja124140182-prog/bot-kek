@@ -5417,37 +5417,64 @@ def _selesaikan_lti(page, hanya_rating=False):
                     if latihan:
                         catatan.append("klik " + latihan)
                         jepret("tile-cobalah-latihan")
-                        time.sleep(4)
-                        frame = ambil_frame() or frame
+                        status_aktif(f"{kunci}: menunggu halaman langkah aktivitas")
+                        # Navigasi setelah klik tidak langsung selesai. Tunggu
+                        # teks "Langkah 1" muncul sebelum mencari refleksi.
+                        for _n in range(30):
+                            time.sleep(1)
+                            frame = ambil_frame() or frame
+                            try:
+                                if frame.evaluate("""() => /Langkah\\s*1/i.test(
+                                        document.body.innerText || '')"""):
+                                    catatan.append("halaman langkah muncul")
+                                    break
+                            except Exception:
+                                pass
+                        else:
+                            catatan.append("halaman langkah TIDAK muncul")
                 else:
                     catatan.append("tidak ada tombol Lihat Aktivitas")
 
                 # Halaman langkap aktivitas diakhiri tombol
                 # "Sudah menyelesaikan aktivitasnya? Refleksikan aktivitasnya".
                 # Scroll dulu, lalu klik supaya sesi penilaian benar-benar mulai.
-                frame.evaluate("""() => {
-                    for (let i = 0; i < 4; i++) {
-                        window.scrollTo(0, document.body.scrollHeight);
-                        const e = document.scrollingElement;
-                        if (e) e.scrollTop = e.scrollHeight;
-                    }
-                }""")
-                time.sleep(1)
-                refleksi_mulai = frame.evaluate("""() => {
-                    const e=[...document.querySelectorAll('button, a, div, span')]
-                      .find(x => x.getBoundingClientRect().width > 0 &&
-                                 /Refleksikan aktivitasnya/i.test(x.innerText || ''));
-                    if (!e) return '';
-                    e.scrollIntoView({block:'center'});
-                    const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
-                    (e.closest('button, a') || e).click();
-                    return teks;
-                }""")
+                status_aktif(f"{kunci}: mencari tombol Refleksikan aktivitasnya")
+                refleksi_mulai = ""
+                for _n in range(30):
+                    frame.evaluate("""() => {
+                        for (let i = 0; i < 4; i++) {
+                            window.scrollTo(0, document.body.scrollHeight);
+                            const e = document.scrollingElement;
+                            if (e) e.scrollTop = e.scrollHeight;
+                        }
+                    }""")
+                    time.sleep(0.7)
+                    refleksi_mulai = frame.evaluate("""() => {
+                        const e=[...document.querySelectorAll('button, a, div, span')]
+                          .find(x => x.getBoundingClientRect().width > 0 &&
+                                     /Refleksikan aktivitasnya/i.test(x.innerText || ''));
+                        if (!e) return '';
+                        e.scrollIntoView({block:'center'});
+                        const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                        (e.closest('button, a') || e).click();
+                        return teks;
+                    }""")
+                    if refleksi_mulai:
+                        break
                 if refleksi_mulai:
                     catatan.append("klik " + refleksi_mulai)
                     jepret("tile-refleksikan")
-                    time.sleep(3)
-                    frame = ambil_frame() or frame
+                    status_aktif(f"{kunci}: menjawab refleksi")
+                    for _n in range(20):
+                        time.sleep(1)
+                        frame = ambil_frame() or frame
+                        try:
+                            if info_refleksi(frame)["opsi"] or info_refleksi(frame)["input"]:
+                                break
+                        except Exception:
+                            pass
+                else:
+                    catatan.append("tombol Refleksikan aktivitasnya TIDAK ditemukan")
 
                 for _langkah in range(50):
                     _tunggu_jika_dijeda()
