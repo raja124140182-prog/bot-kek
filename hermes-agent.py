@@ -67,6 +67,45 @@ _CFG_BOT = _muat_konfigurasi_bot()
 # perilaku awal GitHub.
 PEMILIH_KEDUA = bool(_CFG_BOT.get("pemilih_kedua", True))
 
+# Penargetan aktivitas: isi 'target_aktivitas' di konfigurasi.json ATAU tulis
+# id/nama aktivitas ke file target-aktivitas.txt (satu per baris). File dibaca
+# ulang setiap kali modul dijalankan, jadi daftar bisa diubah tanpa restart.
+# Kosong = kerjakan semua aktivitas seperti sebelumnya.
+FILE_TARGET = Path(__file__).resolve().parent / "target-aktivitas.txt"
+
+
+def _target_aktivitas():
+    """Daftar id/nama aktivitas yang boleh dikerjakan (kosong = semua)."""
+    mentah = []
+    try:
+        if FILE_TARGET.exists():
+            for baris in FILE_TARGET.read_text(encoding="utf-8").splitlines():
+                baris = baris.split("#", 1)[0].strip()
+                if baris:
+                    mentah.extend(x.strip() for x in re.split(r"[,;]", baris) if x.strip())
+    except Exception:
+        pass
+    if not mentah:
+        mentah = [_x for _x in (_CFG_BOT.get("target_aktivitas") or []) if str(_x).strip()]
+    return [str(x).strip() for x in mentah if str(x).strip()]
+
+
+def _cocok_target(aktivitas, targets):
+    """Cocokkan target berdasarkan instance id, nama aktivitas, atau pelajaran."""
+    if not targets:
+        return True
+    inst = str(aktivitas.get("instance") or "")
+    nama = str(aktivitas.get("nama") or "").lower()
+    pel = str(aktivitas.get("pelajaran") or "").lower()
+    grup = str(aktivitas.get("grup") or "").lower()
+    for t in targets:
+        tl = str(t).lower().strip()
+        if not tl:
+            continue
+        if tl == inst or tl in nama or tl in pel or tl in grup:
+            return True
+    return False
+
 _RIWAYAT_PILIH = {}
 _KATA_STOP = {
     "yang", "dan", "dengan", "untuk", "dari", "pada", "ini", "itu", "atau",
@@ -5180,6 +5219,19 @@ def alat_kerjakan_modul(arg):
     url_kursus = page.url
     if "/courses/" not in url_kursus:
         return "Error: buka halaman kursus dulu (URL mengandung /courses/)."
+    # Target bisa dikirim lewat argumen, konfigurasi.json, atau file
+    # target-aktivitas.txt. Kosong berarti kerjakan semua aktivitas.
+    targets = [str(x).strip() for x in (arg.get("target") or [])
+               if str(x).strip()] or _target_aktivitas()
+    if targets:
+        print(datetime.now().strftime("%H:%M:%S") +
+              " TARGET AKTIVITAS: " + ", ".join(targets), flush=True)
+
+    def daftar_target():
+        d = _daftar_aktivitas_modul(page, nama)
+        if not targets:
+            return d
+        return [a for a in d if _cocok_target(a, targets)]
 
     def info_modul():
         for f in _semua_frame(_pastikan_browser()):
@@ -5204,13 +5256,16 @@ def alat_kerjakan_modul(arg):
     awal = info_modul()
     if not awal:
         return f"Modul '{nama}' tidak ditemukan di halaman kursus."
-    if awal["total"] and awal["selesai"] >= awal["total"]:
+    if awal["total"] and awal["selesai"] >= awal["total"] and not targets:
         return f"Modul '{nama}' sudah ✅ centang semua ({awal['selesai']}/{awal['total']})."
     tampilkan_popup("Hermes mengerjakan modul", nama)
     log = [f"MULAI: {awal['nama']} ({awal['selesai']}/{awal['total']})"]
-    daftar = _daftar_aktivitas_modul(page, nama)
+    daftar = daftar_target()
+    if targets:
+        _catat(log, f"TARGET: {len(daftar)} aktivitas cocok dari daftar modul -> {targets}")
     if not daftar:
-        return "\n".join(log + ["Error: daftar aktivitas API tidak tersedia."])
+        return "\n".join(log + ["Tidak ada aktivitas yang cocok dengan target."
+                                if targets else "Error: daftar aktivitas API tidak tersedia."])
     ringkas = ", ".join(f"{a['grup']}/{a['nama']}" for a in daftar[:6])
     _catat(log, f"Aktivitas dari API ({len(daftar)}): {ringkas}" +
            (" ..." if len(daftar) > 6 else ""))
@@ -5222,10 +5277,11 @@ def alat_kerjakan_modul(arg):
 
     for putaran in range(3):
         info = info_modul()
-        if info and info["total"] and info["selesai"] >= info["total"]:
+        if (info and info["total"] and info["selesai"] >= info["total"]
+                and not targets):
             _catat(log, f"SELESAI: {info['nama']} ✅ {info['selesai']}/{info['total']}")
             break
-        daftar = _daftar_aktivitas_modul(page, nama)
+        daftar = daftar_target()
         belum = [a for a in daftar if not _selesai_aktivitas(a["status"])]
         if any(a["instance"] in dilewati for a in belum):
             _catat(log, "  DILEWATI: 174072 (API inProgress; sudah diverifikasi mustahil lewat UI).")
