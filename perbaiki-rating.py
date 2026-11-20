@@ -77,6 +77,12 @@ page.on("response", lambda res: DIAG["respons"].append(
     f"{res.status} {res.url[:120]}") if res.status >= 400 else None)
 
 
+def sesi_habis():
+    """Token login kedaluwarsa ditandai 401 dari API Wadhwani."""
+    return any(str(x).startswith("401") and "api.opportunity" in str(x)
+               for x in DIAG["respons"])
+
+
 def catat_diag(halaman, inst):
     try:
         cat("  DIAG", inst, "frame:", [x.url[:130] for x in m._semua_frame(halaman)])
@@ -273,6 +279,16 @@ def proses_satu(a, i, total):
 
 
 def jalankan():
+    for _ in range(20):
+        if sesi_habis():
+            break
+        time.sleep(1)
+    if sesi_habis():
+        cat("SESI LOGIN HABIS (401). Bot dihentikan.")
+        cat("Silakan login ulang di browser yang terbuka, lalu jalankan lagi.")
+        m.tampilkan_popup("Hermes menemui kendala",
+                          "Sesi login habis (401). Perlu login ulang di browser.")
+        return
     paksa = "--paksa" in sys.argv
     cache = {} if paksa else muat_json(CACHE, {})
     items = semua_lti()
