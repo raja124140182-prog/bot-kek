@@ -3052,6 +3052,7 @@ def _selesaikan_scorm(page):
         loop_berhenti = False
 
         start_video_diklik = False
+        play_splash_diklik = False
         for _ in range(250):
             _tunggu_jika_dijeda()
             if loop_berhenti:
@@ -3090,6 +3091,32 @@ def _selesaikan_scorm(page):
                 teks_seq = str(teks_seq)
             teks_sequence = teks_dom + " " + teks_seq
             teks = teks_dom + " " + ss("cek")
+
+            # Splash Storyline punya DUA tombol: MULAI lalu play2.png.
+            # Sebelumnya bot hanya mengklik MULAI, slide tidak pernah maju dan
+            # akhirnya berhenti di guard "slide tanpa interaksi" (174283).
+            if not play_splash_diklik:
+                try:
+                    if frame.evaluate("""() => {
+                        const re = /^(play2\\.png|Play|Putar)$/i;
+                        const b = [...document.querySelectorAll('button, .acc-button')]
+                          .find(x => {
+                            const r = x.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0 && !x.disabled &&
+                                   re.test((x.innerText || x.getAttribute('aria-label') || '').trim());
+                          });
+                        if (b) { b.click(); return true; }
+                        return false;
+                    }"""):
+                        play_splash_diklik = True
+                        print(datetime.now().strftime("%H:%M:%S") +
+                              " [SCORM] tombol Play splash ditekan", flush=True)
+                        ss("tekan-play-splash")
+                        time.sleep(2.5)
+                        frame = _frame_scorm(page) or frame
+                        continue
+                except Exception:
+                    pass
 
             # Tombol pembuka di dalam konten: 'MULAI' / 'play2.png' / 'Play'.
             # Start Course hanya membawa ke splash; tanpa ini materi tidak dimulai.
@@ -4283,14 +4310,42 @@ def _selesaikan_scorm(page):
             }"""):
                 break
             maju_tanpa_jawaban += 1
-            if maju_tanpa_jawaban > 40:
+            if maju_tanpa_jawaban > 100:
                 try:
                     cuplikan = " ".join(frame.inner_text("body").split())[:400]
                 except Exception:
                     cuplikan = ""
                 print(datetime.now().strftime("%H:%M:%S") +
-                      " [SCORM] berhenti: 40 slide tanpa interaksi. Teks: " +
+                      " [SCORM] guard 100 slide tanpa interaksi; coba lagi bila ada. Teks: " +
                       cuplikan, flush=True)
+                # Jangan langsung menyerah: soal yang salah masih punya sisa
+                # percobaan. Klik "Coba lagi", ulangi deteksi opsi dari awal.
+                api_guard = False
+                try:
+                    mm_g = re.search(r"/course-lesson/\d+/(\d+)", page.url or "")
+                    api_guard = bool(mm_g) and _selesai_aktivitas(
+                        _status_aktivitas_api(page, mm_g.group(1)))
+                except Exception:
+                    pass
+                bisa_ulang = False
+                if not api_guard and ulangan < 6:
+                    try:
+                        bisa_ulang = frame.evaluate("""() => {
+                            const b = [...document.querySelectorAll('.acc-button, button')]
+                              .find(x => /coba lagi/i.test((x.innerText || '').trim()) &&
+                                         !x.disabled && x.getBoundingClientRect().width > 0);
+                            if (b) { b.click(); return true; }
+                            return false;
+                        }""")
+                    except Exception:
+                        bisa_ulang = False
+                if bisa_ulang:
+                    ulangan += 1
+                    maju_tanpa_jawaban = 0
+                    ss("guard-coba-lagi")
+                    time.sleep(2)
+                    frame = _frame_scorm(page) or frame
+                    continue
                 break
             time.sleep(1.2)
 
@@ -5178,7 +5233,27 @@ def alat_kerjakan_modul(arg):
             if frame_kuis and _teks_opsi_attempt(frame_kuis):
                 _catat(log, "  " + _selesaikan_attempt_otomatIs().replace("\n", " | ")[:400])
             elif a["modtype"] == "lti" or re.match(r"^Berkolaborasi\b", a["nama"], re.I):
-                _catat(log, "  " + (_selesaikan_lti(halaman) or "Kolaborasi tidak diproses."))
+                # Frame /ltiPage bisa termuat jauh lebih lambat daripada frame
+                # biasa. Tunggu sampai benar-benar ada sebelum menyerah.
+                for _ in range(90):
+                    halaman = _pastikan_browser()
+                    if any("/ltiPage" in (x.url or "") for x in _semua_frame(halaman)):
+                        break
+                    time.sleep(1)
+                hasil_lti = _selesaikan_lti(halaman)
+                if not hasil_lti:
+                    # Satu retry setelah memuat ulang: sebelumnya 174304 dilewati
+                    # hanya karena frame datang terlambat (panic "Kolaborasi tidak diproses").
+                    _catat(log, "  LTI frame terlambat; memuat ulang sekali.")
+                    alat_buka_browser({"url": a["url"]})
+                    time.sleep(10)
+                    halaman = _pastikan_browser()
+                    for _ in range(60):
+                        if any("/ltiPage" in (x.url or "") for x in _semua_frame(halaman)):
+                            break
+                        time.sleep(1)
+                    hasil_lti = _selesaikan_lti(halaman)
+                _catat(log, "  " + (hasil_lti or "Kolaborasi tidak diproses."))
             elif re.match(r"^Pelajari lebih lanjut\b", a["nama"], re.I):
                 _catat(log, "  " + _lewati_video_dan_keluar(halaman))
             else:
