@@ -4960,11 +4960,13 @@ def _selesaikan_lti(page, hanya_rating=False):
                         return f
                     time.sleep(0.5)
                 break
-        # Fallback: frame LTI dengan URL lain tetap diterima bila kartunya ada.
+        # Fallback: frame LTI dengan URL lain tetap diterima bila ada kartu,
+        # bagian penyelesaian, ATAU teks rating.
         for y in _semua_frame(page):
             try:
                 if y.evaluate("""() => !!document.querySelector(
-                        '.activity-card, .activity-completion-section, .gen-ai-card')"""):
+                        '.activity-card, .activity-completion-section, '
+                        + '.gen-ai-card, .rating-text')"""):
                     return y
             except Exception:
                 continue
@@ -5144,15 +5146,29 @@ def _selesaikan_lti(page, hanya_rating=False):
     catatan = []
 
     def baca_tiles(fr):
-        """Baca semua tile penyelesaian beserta rating 1-5 dari frame LTI."""
-        return fr.evaluate("""() => [...document.querySelectorAll('.activity-completion-section')].map((e,i)=>{
+        """Baca semua tile penyelesaian beserta rating 1-5 dari frame LTI.
+
+        Struktur normal memakai .activity-completion-section. Beberapa versi
+        halaman hanya menampilkan .rating-text tanpa pembungkus itu, jadi ada
+        fallback berdasarkan elemen rating itu sendiri.
+        """
+        return fr.evaluate("""() => {
+          const sections=[...document.querySelectorAll('.activity-completion-section')];
+          if (sections.length) return sections.map((e,i)=>{
             const tr=e.closest('tr');
             const role=(tr?.querySelector('.role-name')?.innerText||'').replace(/\\s+/g,' ').trim();
             const tds=tr?[...tr.querySelectorAll('td')]:[];
             const kolom=tds.indexOf(e.closest('td'));
             const rating=(e.querySelector('.rating-text')?.innerText||'').replace(/\\s+/g,' ').trim();
             return {i, kunci:'tile-'+role+'#'+kolom, rating, role, kolom};
-        })""")
+          });
+          return [...document.querySelectorAll('.rating-text')].map((e,i)=>{
+            const rating=(e.innerText||'').replace(/\\s+/g,' ').trim();
+            const baris=e.closest('tr,li,[class*=row]') || e.parentElement;
+            const role=(baris?.innerText||'').replace(/\\s+/g,' ').trim().slice(0,60);
+            return {i, kunci:'rating-'+i+'-'+role, rating, role, kolom:i};
+          });
+        }""")
 
     def rating_angka(teks):
         mm = re.match(r"^\\s*(\\d+)\\s*/\\s*5\\s*$", str(teks or ""))
@@ -5426,7 +5442,7 @@ def _selesaikan_lti(page, hanya_rating=False):
     return (f"Kolaborasi LTI: {selesai} kartu dikerjakan, {perbaikan} ulangan rating, "
             f"sisa rating <5/5: {sisa_rating}. "
             f"Jawaban berbasis konteks aktivitas (model lokal + OCR tiap langkah). {ringkas}"
-            ) if (selesai or perbaikan or sisa_rating > 0) else ""
+            ) if (selesai or perbaikan or sisa_rating != 0) else ""
 
 
 def _lewati_video_dan_keluar(page):
