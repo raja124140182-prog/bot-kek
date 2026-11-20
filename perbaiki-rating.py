@@ -6,8 +6,10 @@ dilanjutkan kapan saja. Entri yang sudah terbukti bagus disimpan di
 rating-scan.json (TTL 60 menit) agar tidak dipindai ulang.
 
 Jalankan:
-    py -3.15 -u perbaiki-rating.py            # lanjut, pakai cache
-    py -3.15 -u perbaiki-rating.py --paksa    # abaikan cache, scan ulang semua
+    py -3.15 -u perbaiki-rating.py             # lanjut, pakai cache (tanpa scan ulang)
+    py -3.15 -u perbaiki-rating.py --paksa     # abaikan cache, scan ulang semua
+    py -3.15 -u perbaiki-rating.py --scan-saja # hanya kumpulkan daftar, tanpa klik
+    py -3.15 -u perbaiki-rating.py --paksa --uji  # uji 2 aktivitas pertama
 """
 import importlib.util
 import json
@@ -51,7 +53,13 @@ def simpan_json(path, dat):
 
 
 def masih_segar(entri, menit=60):
-    if not entri or entri.get("perlu") or entri.get("kendala"):
+    """Cache scan dianggap segar selama belum ada kendala.
+
+    'perlu=True' BUKAN alasan untuk memindai ulang: itu berarti rating masih
+    rendah dan perlu diperbaiki. Mengira 'perlu' sebagai data basi membuat bot
+    memindai ulang tile yang sama setiap kali dijalankan.
+    """
+    if not entri or entri.get("kendala"):
         return False
     try:
         return datetime.now() - datetime.fromisoformat(
@@ -104,15 +112,36 @@ def catat_diag(halaman, inst):
 
 
 def semua_lti():
-    keluar, terlihat = [], set()
-    for nama in cfg["modul"]:
-        for a in m._daftar_aktivitas_modul(page, nama):
-            if a["modtype"] == "lti" or re.match(r"^Berkolaborasi\b", a["nama"], re.I):
-                if a["instance"] in terlihat:
-                    continue
-                terlihat.add(a["instance"])
-                keluar.append(a)
-    return keluar
+    """Daftar Berkolaborasi dari API, dengan retry bila API sempat kosong.
+
+    Penyebab 'total: 0' sebelumnya: API belum merespons saat browser baru
+    dibuka. Satu kegagalan langsung dianggap 'tidak ada aktivitas'.
+    """
+    for giliran in range(1, 4):
+        try:
+            dat = m._data_konten_kursus(page, paksa=True)
+        except Exception:
+            dat = None
+        if not dat:
+            cat(f"  API belum memberi data (percobaan {giliran}/3), tunggu 4s")
+            m.status_aktif(f"Menunggu data kursus ({giliran}/3)")
+            time.sleep(4)
+            continue
+        keluar, terlihat = [], set()
+        for nama in cfg["modul"]:
+            for a in m._daftar_aktivitas_modul(page, nama):
+                if a["modtype"] == "lti" or re.match(r"^Berkolaborasi\b", a["nama"], re.I):
+                    if a["instance"] in terlihat:
+                        continue
+                    terlihat.add(a["instance"])
+                    keluar.append(a)
+        if keluar:
+            return keluar
+        cat(f"  API sukses tapi daftar kosong (percobaan {giliran}/3)")
+        time.sleep(4)
+    cat("DIAG semua_lti: URL", page.url, "| token",
+        bool(page.evaluate("() => localStorage.getItem('@accessToken')")))
+    return []
 
 
 def frame_aktivitas(halaman):
@@ -219,8 +248,8 @@ def tulis_hasil(hasil):
                         "entri": hasil})
 
 
-def proses_satu(a, i, total):
-    """Scan satu Berkolaborasi, kerjakan bila perlu, lalu kembalikan hasilnya."""
+def proses_satu(a, i, total, kerja=True):
+    """Scan satu Berkolaborasi; kerja=True juga memperbaiki rating bila perlu."""
     inst = a["instance"]
     m.status_aktif(f"Memindai Berkolaborasi {i}/{total}: {inst}")
     halaman, frame, faktor = buka_lti(a["url"])
@@ -234,6 +263,12 @@ def proses_satu(a, i, total):
     ratings, rendah = baca_rating(frame, faktor)
     status = m._status_aktivitas_api(m._pastikan_browser(), inst)
     cat(f"[{i}/{total}] {inst} status={status} rating={ratings} rendah={rendah}")
+
+    if not kerja:
+        # Mode --scan-saja: hanya kumpulkan daftar kerja, tidak mengklik
+        # tombol apa pun di dalam aktivitas.
+        return entri_baru(a, status, ratings, rendah,
+                          perlu=(not selesai(status) or rendah != 0)), False
 
     if selesai(status) and rendah == 0:
         return entri_baru(a, status, ratings, rendah), False
@@ -279,26 +314,45 @@ def jalankan():
                           "Sesi login habis (401). Perlu login ulang di browser.")
         return
     paksa = "--paksa" in sys.argv
+    scan_saja = "--scan-saja" in sys.argv
     cache = {} if paksa else muat_json(CACHE, {})
     items = semua_lti()
+    if not items:
+        # Jangan langsung menyimpulkan 'tidak ada aktivitas'. Muat ulang
+        # halaman kursus sekali lalu coba lagi.
+        cat("Daftar kosong. Muat ulang halaman kursus sekali...")
+        try:
+            page.goto(cfg["url_kursus"], wait_until="domcontentloaded", timeout=90000)
+        except Exception:
+            pass
+        time.sleep(8)
+        items = semua_lti()
+    if not items:
+        m.tampilkan_popup("Hermes menemui kendala",
+                          "Daftar Berkolaborasi kosong. Perlu cek koneksi/login.")
+        return
     if "--uji" in sys.argv:
         items = items[:2]
-    cat("=== SCAN + KERJA PER AKTIVITAS ===", "total:", len(items),
+    mode = "SCAN SAJA" if scan_saja else "SCAN + KERJA PER AKTIVITAS"
+    cat("===", mode, "===", "total:", len(items),
         "| paksa:", paksa, "| faktor jaringan:", m._faktor_jaringan(page))
+    m.status_aktif(f"Memindai {len(items)} aktivitas Berkolaborasi")
     hasil, gagal_berturut = [], 0
     for i, a in enumerate(items, 1):
         inst = a["instance"]
         lama = None if paksa else cache.get(inst)
-        if masih_segar(lama):
+        if masih_segar(lama) and not scan_saja:
             e = dict(lama)
             e.update({"instance": inst, "url": a["url"], "nama": a["nama"],
                       "pelajaran": a["pelajaran"], "dari_cache": True})
             hasil.append(e)
             tulis_hasil(hasil)
-            cat(f"[{i}/{len(items)}] {inst}: dilewati (cache masih segar).")
+            cat(f"[{i}/{len(items)}] {inst}: pakai data scan sebelumnya "
+                f"(tidak dipindai ulang). rating={e.get('ratings')} "
+                f"perlu={e.get('perlu')}")
             gagal_berturut = 0
             continue
-        e, bekerja = proses_satu(a, i, len(items))
+        e, bekerja = proses_satu(a, i, len(items), kerja=not scan_saja)
         hasil.append(e)
         cache[inst] = dict(e)
         simpan_json(CACHE, cache)
@@ -314,22 +368,23 @@ def jalankan():
             m.tampilkan_popup("Hermes menemui kendala",
                               "Frame LTI gagal 3x berturut. Perlu login ulang.")
             break
-    # Putaran kedua: jangan berhenti hanya karena putaran pertama gagal.
-    # Entri yang masih perlu dicoba lagi oleh proses yang sama sampai 2x.
-    for putaran in (1, 2):
-        belum = [(i, e) for i, e in enumerate(hasil)
-                 if e.get("perlu") and not e.get("kendala")]
-        if not belum:
-            break
-        cat(f"--- PUTARAN PERBAIKAN {putaran}: {len(belum)} aktivitas ---")
-        for i, e in belum:
-            a = {"instance": e["instance"], "url": e["url"], "nama": e["nama"],
-                 "pelajaran": e["pelajaran"], "modtype": "lti"}
-            baru, _ = proses_satu(a, i + 1, len(hasil))
-            hasil[i] = baru
-            cache[e["instance"]] = dict(baru)
-            simpan_json(CACHE, cache)
-            tulis_hasil(hasil)
+    if not scan_saja:
+        # Putaran kedua: jangan berhenti hanya karena putaran pertama gagal.
+        # Entri yang masih perlu dicoba lagi oleh proses yang sama sampai 2x.
+        for putaran in (1, 2):
+            belum = [(i, e) for i, e in enumerate(hasil)
+                     if e.get("perlu") and not e.get("kendala")]
+            if not belum:
+                break
+            cat(f"--- PUTARAN PERBAIKAN {putaran}: {len(belum)} aktivitas ---")
+            for i, e in belum:
+                a = {"instance": e["instance"], "url": e["url"], "nama": e["nama"],
+                     "pelajaran": e["pelajaran"], "modtype": "lti"}
+                baru, _ = proses_satu(a, i + 1, len(hasil))
+                hasil[i] = baru
+                cache[e["instance"]] = dict(baru)
+                simpan_json(CACHE, cache)
+                tulis_hasil(hasil)
 
     perlu = [e for e in hasil if e.get("perlu")]
     kendala = [e for e in hasil if e.get("kendala")]

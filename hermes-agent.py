@@ -5362,71 +5362,65 @@ def _selesaikan_lti(page, hanya_rating=False):
                                f"{percobaan[kunci]}/{MAKS_PERCOBAAN}, konteks "
                                f"{len(konteks)} char, OCR {len(ocr)} char")
 
-                # Tombol 'Mengulang' / 'Refleksikan aktivitasnya' bisa muncul
-                # dengan label berbeda; keduanya memulai sesi penilaian ulang.
-                if frame.evaluate("""() => [...document.querySelectorAll('button, a, div, span')]
-                        .some(x => x.getBoundingClientRect().width > 0 &&
-                                   /Mengulang|Refleksikan aktivitasnya/i.test(x.innerText || ''))"""):
-                    frame.evaluate("""() => {
-                        const e=[...document.querySelectorAll('button, a, div, span')]
-                            .find(x => x.getBoundingClientRect().width > 0 &&
-                                       /Mengulang|Refleksikan aktivitasnya/i.test(x.innerText || ''));
-                        if(e)(e.closest('button')||e).click();
-                    }""")
-                    time.sleep(2.5)
-                    jepret("tile-mengulang")
-                else:
-                    # Tombol bisa berada di bawah lipatan halaman, jadi scroll
-                    # dulu sampai bawah sebelum mencari/mengkliknya.
+                # SESUAI PERMINTAAN: jangan klik "Mengulang" dan jangan
+                # mengerjakan ulang langkah aktivitas. Yang dicari hanya
+                # "Lihat Aktivitas" pada tile yang ratingnya rendah.
+                # Tombol bisa berada di bawah lipatan, jadi scroll dulu.
+                frame.evaluate("""() => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    const e = document.scrollingElement;
+                    if (e) e.scrollTop = e.scrollHeight;
+                }""")
+                time.sleep(1)
+                rating_tile = str(t.get("rating") or "").strip()
+                diklik = frame.evaluate("""(rating) => {
+                    const semua=[...document.querySelectorAll('button, a, div, span')]
+                      .filter(x => x.getBoundingClientRect().width > 0 &&
+                                   /Lihat Aktivitas/i.test(x.innerText || '') &&
+                                   (x.innerText || '').trim().length < 40);
+                    if (!semua.length) return '';
+                    let e=semua.find(x => {
+                        let p=x;
+                        for (let i=0; i<6 && p; i++, p=p.parentElement) {
+                            if ((p.innerText || '').includes(rating)) return true;
+                        }
+                        return false;
+                    }) || semua[0];
+                    const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                    e.scrollIntoView({block:'center'});
+                    (e.closest('button, a') || e).click();
+                    return teks;
+                }""", rating_tile)
+                if diklik:
+                    catatan.append("klik Lihat Aktivitas: " + diklik)
+                    jepret("tile-lihat-aktivitas")
+                    time.sleep(3)
+                    frame = ambil_frame() or frame
                     frame.evaluate("""() => {
                         window.scrollTo(0, document.body.scrollHeight);
                         const e = document.scrollingElement;
                         if (e) e.scrollTop = e.scrollHeight;
                     }""")
                     time.sleep(0.8)
-                    # Hasil OCR tile-detail: yang tampil bukan tombol "Mengulang",
-                    # melainkan daftar "Lihat Aktivitas". Klik salah satu untuk
-                    # membuka kembali refleksi aktivitas yang ratingnya rendah.
-                    diklik = frame.evaluate("""() => {
+                    # Detail aktivitas menampilkan tombol "Cobalah Latihan"
+                    # untuk masuk ke sesi refleksi/penilaian ulang.
+                    latihan = frame.evaluate("""() => {
                         const e=[...document.querySelectorAll('button, a, div, span')]
                           .find(x => x.getBoundingClientRect().width > 0 &&
-                                     /Lihat Aktivitas/i.test(x.innerText || '') &&
-                                     (x.innerText || '').trim().length < 40);
+                                     /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
                         if (!e) return '';
                         const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                        e.scrollIntoView({block:'center'});
                         (e.closest('button, a') || e).click();
                         return teks;
                     }""")
-                    if diklik:
-                        catatan.append("klik Lihat Aktivitas: " + diklik)
-                        jepret("tile-lihat-aktivitas")
-                        time.sleep(3)
+                    if latihan:
+                        catatan.append("klik " + latihan)
+                        jepret("tile-cobalah-latihan")
+                        time.sleep(4)
                         frame = ambil_frame() or frame
-                        frame.evaluate("""() => {
-                            window.scrollTo(0, document.body.scrollHeight);
-                            const e = document.scrollingElement;
-                            if (e) e.scrollTop = e.scrollHeight;
-                        }""")
-                        time.sleep(0.8)
-                        # Detail aktivitas menampilkan tombol "Cobalah Latihan"
-                        # untuk masuk ke refleksi/penilaian ulang.
-                        latihan = frame.evaluate("""() => {
-                            const e=[...document.querySelectorAll('button, a, div, span')]
-                              .find(x => x.getBoundingClientRect().width > 0 &&
-                                         /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
-                            if (!e) return '';
-                            const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
-                            e.scrollIntoView({block:'center'});
-                            (e.closest('button, a') || e).click();
-                            return teks;
-                        }""")
-                        if latihan:
-                            catatan.append("klik " + latihan)
-                            jepret("tile-cobalah-latihan")
-                            time.sleep(4)
-                            frame = ambil_frame() or frame
-                    else:
-                        catatan.append("tidak ada tombol Mengulang/Lihat Aktivitas")
+                else:
+                    catatan.append("tidak ada tombol Lihat Aktivitas")
 
                 # Halaman langkap aktivitas diakhiri tombol
                 # "Sudah menyelesaikan aktivitasnya? Refleksikan aktivitasnya".
