@@ -1,0 +1,15 @@
+# Aktivitas Berkolaborasi yang belum lulus / masih berlangsung.
+# Bot hanya akan mengerjakan id di bawah ini. Kosongkan file untuk kembali ke mode semua aktivitas.
+# Profesionalisme (inProgress)
+174320
+174329
+174338
+174347
+174352
+# Berpusat kepada Pelanggan (notStarted)
+174359
+174366
+174375
+174382
+174389
+174398
