@@ -3039,7 +3039,11 @@ def _selesaikan_scorm(page):
             frame = _frame_scorm(page) or frame
 
         interaksi = 0
-        dijawab = set()   # id interaksi yang sudah dijawab, agar tidak diulang
+        dijawab = set()   # id interaksi yang sudah dijawab dengan benar
+        # Kunci yang sudah dicoba habis pada SLIDE tertentu. Dipisah dari
+        # 'dijawab' supaya radio/tombol di slide berikutnya tetap boleh
+        # memakai kunci yang sama, tanpa mengulang slide yang sama terus.
+        dijawab_gagal = set()
         ulangan = 0
         selesai = False
         box_terakhir = None
@@ -3788,11 +3792,14 @@ def _selesaikan_scorm(page):
                                 api_tombol = _cek_api_tombol()
                                 if api_tombol or status_tombol is True:
                                     break
-                        dijawab.add(kid)
                         interaksi += 1
                         maju_tanpa_jawaban = 0
                         perlu_kembali = bool(box_terakhir)
                         if api_tombol or status_tombol is True:
+                            # Tandai selesai HANYA bila jawaban benar. Kalau
+                            # ditandai lebih awal, kunci ini tidak dipakai lagi
+                            # oleh jalur radio/generik di slide berikutnya.
+                            dijawab.add(kid)
                             break
                         if (status_tombol is False or not api_tombol) and PEMILIH_KEDUA:
                             ulangan += 1
@@ -3911,34 +3918,57 @@ def _selesaikan_scorm(page):
                             return False
 
                     teks_opsi_g = [str(o.get("teks") or "").strip() for o in generik]
+                    try:
+                        lbl_g = frame.evaluate(
+                            "() => (document.querySelector('#slide-label')||{}).innerText || ''")
+                    except Exception:
+                        lbl_g = ""
+                    sidik_slide_g = lbl_g + "|" + "|".join(
+                        str(o.get("uid") or "") for o in generik)
                     kandidat_g = [
                         k for k in kunci
-                        if k.get("benar") and k.get("id") not in dijawab]
+                        if k.get("benar") and k.get("id") not in dijawab
+                        and (sidik_slide_g, k.get("id")) not in dijawab_gagal]
 
                     # 1) Prioritas: kunci data.js (perilaku awal)
                     for k in kandidat_g:
-                        indeks = []
+                        pilih_ids = [_normal_id(p) for p in k.get("pilih", [])
+                                     if _normal_id(p)]
+                        label_opsi = {
+                            _normal_id(key): str(val).strip()
+                            for key, val in (k.get("pilih_label") or {}).items()
+                        }
+                        indeks, target_ops = [], []
                         for v in [str(x) for x in k.get("benar", [])]:
                             nv = _normal_id(v)
                             cocok = next(
                                 (i for i, o in enumerate(generik)
                                  if _normal_id(o.get("uid")) == nv or
                                     _normal_id(o.get("id")) == nv), None)
-                            if cocok is None:
-                                angka = int(re.sub(r"\D", "", v) or 0)
-                                if angka:
-                                    cocok = (angka - 1) % len(generik)
-                            if cocok is not None and cocok not in indeks:
-                                indeks.append(cocok)
-                        if not indeks:
+                            if cocok is not None:
+                                if cocok not in indeks:
+                                    indeks.append(cocok)
+                                    target_ops.append(generik[cocok])
+                                continue
+                            # ID data.js adalah token alfanumerik (mis.
+                            # 6JPSQOpYlYj = opsi B). Mengambil angka "6" dari
+                            # token itu dulu salah memilih opsi A/C. Klik
+                            # elemen acc-<id> langsung memakai kunci asli.
+                            if nv and nv in pilih_ids:
+                                target_ops.append({
+                                    "uid": nv, "id": nv,
+                                    "teks": label_opsi.get(nv, ""),
+                                    "sumber": "kunci", "multi": False,
+                                })
+                        if not target_ops:
                             continue
                         ss("generik-sebelum")
                         print(datetime.now().strftime("%H:%M:%S") +
                               f" [SCORM] Opsi generik: {len(generik)} ditemukan, "
-                              f"kunci data.js -> {[generik[i]['teks'][:45] for i in indeks]}",
+                              f"kunci data.js -> {[str(o.get('teks') or o.get('uid'))[:45] for o in target_ops]}",
                               flush=True)
-                        for i in indeks:
-                            _klik_opsi_kuis(frame, generik[i])
+                        for o in target_ops:
+                            _klik_opsi_kuis(frame, o)
                             time.sleep(0.4)
                             frame = _frame_scorm(page) or frame
                         ss("generik-sudah-pilih")
@@ -3948,36 +3978,48 @@ def _selesaikan_scorm(page):
                         ss("generik-sesudah-kirim")
                         api_g = _cek_api_generik()
                         status_g = _status_jawaban_scorm(frame, transkrip)
-                        dijawab.add(k.get("id"))
                         interaksi += 1
                         maju_tanpa_jawaban = 0
                         perlu_kembali = bool(box_terakhir)
                         if api_g or status_g is True:
+                            dijawab.add(k.get("id"))
                             break
-                        if status_g is False or not api_g:
-                            ulangan += 1
-                            for geser in range(1, min(4, len(generik))):
-                                alt = [(i + geser) % len(generik) for i in indeks]
-                                if alt == indeks:
-                                    continue
-                                ss("generik-ulang")
-                                _coba_lagi_generik(frame)
-                                time.sleep(1.0)
+                        # Kunci data.js bisa stale. Coba opsi lain dari daftar
+                        # 'pilih' (urutan A,B,C,D), jangan geser indeks buta
+                        # dan jangan pakai angka dari id alfanumerik.
+                        ulangan += 1
+                        sudah_coba = {_normal_id(o.get("uid")) for o in target_ops}
+                        alternatif = [
+                            {"uid": pid, "id": pid, "teks": label_opsi.get(pid, ""),
+                             "sumber": "kunci", "multi": False}
+                            for pid in pilih_ids if pid not in sudah_coba
+                        ]
+                        if not alternatif:
+                            alternatif = [generik[i] for i in range(len(generik))
+                                          if i not in indeks]
+                        for o in alternatif[:6]:
+                            ss("generik-ulang")
+                            _coba_lagi_generik(frame)
+                            time.sleep(1.0)
+                            frame = _frame_scorm(page) or frame
+                            if re.search(r"tarik.?turun|panah bawah", teks_dom, re.I):
+                                _buka_dropdown_scorm(frame)
+                                time.sleep(0.8)
                                 frame = _frame_scorm(page) or frame
-                                if re.search(r"tarik.?turun|panah bawah", teks_dom, re.I):
-                                    _buka_dropdown_scorm(frame)
-                                    time.sleep(0.8)
-                                    frame = _frame_scorm(page) or frame
-                                for i in alt:
-                                    _klik_opsi_kuis(frame, generik[i])
-                                    time.sleep(0.4)
-                                    frame = _frame_scorm(page) or frame
-                                _klik_kirim_adaptif(frame)
-                                time.sleep(2.5)
-                                frame = _frame_scorm(page) or frame
-                                api_g = _cek_api_generik()
-                                if api_g or _status_jawaban_scorm(frame, transkrip) is True:
-                                    break
+                            _klik_opsi_kuis(frame, o)
+                            time.sleep(0.4)
+                            frame = _frame_scorm(page) or frame
+                            _klik_kirim_adaptif(frame)
+                            time.sleep(2.5)
+                            frame = _frame_scorm(page) or frame
+                            if (_cek_api_generik() or
+                                    _status_jawaban_scorm(frame, transkrip) is True):
+                                dijawab.add(k.get("id"))
+                                break
+                        # Semua opsi pada slide ini sudah dicoba dan gagal.
+                        # Jangan ulang slide yang sama, tetapi biarkan kunci
+                        # dipakai lagi bila slide berikutnya punya radio/tombol.
+                        dijawab_gagal.add((sidik_slide_g, k.get("id")))
                         break
                     else:
                         # 2) Fallback adaptif (PEMILIH_KEDUA): model lokal + peta
