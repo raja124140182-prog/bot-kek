@@ -1,14 +1,13 @@
-"""Dua tahap untuk Berkolaborasi/LTI:
+"""Berkolaborasi: satu aktivitas = scan selesai -> langsung kerjakan bila perlu
+-> simpan hasil -> lanjut ke aktivitas berikutnya.
 
-1. SCAN  : kunjungi semua aktivitas, simpan hasil ke hasil-scan-rating.json.
-2. KERJA : baca file itu, kerjakan HANYA entri yang perlu (belum lulus/rating<5),
-           lalu perbarui file yang sama setelah tiap perbaikan.
+Hasil tiap aktivitas ditulis bertahap ke hasil-scan-rating.json supaya bisa
+dilanjutkan kapan saja. Entri yang sudah terbukti bagus disimpan di
+rating-scan.json (TTL 60 menit) agar tidak dipindai ulang.
 
 Jalankan:
-    py -3.15 -u perbaiki-rating.py             # scan -> simpan -> kerja
-    py -3.15 -u perbaiki-rating.py --scan-saja # scan + simpan saja
-    py -3.15 -u perbaiki-rating.py --kerja     # pakai hasil scan yang tersimpan
-    py -3.15 -u perbaiki-rating.py --paksa     # abaikan cache, scan ulang semua
+    py -3.15 -u perbaiki-rating.py            # lanjut, pakai cache
+    py -3.15 -u perbaiki-rating.py --paksa    # abaikan cache, scan ulang semua
 """
 import importlib.util
 import json
@@ -52,12 +51,11 @@ def simpan_json(path, dat):
 
 
 def masih_segar(entri, menit=60):
-    """Cache dipakai hanya bila tidak perlu perbaikan dan belum terlalu tua."""
-    if not entri or entri.get("perlu"):
+    if not entri or entri.get("perlu") or entri.get("kendala"):
         return False
     try:
-        waktu = entri.get("waktu") or entri.get("t")
-        return datetime.now() - datetime.fromisoformat(waktu) < timedelta(minutes=menit)
+        return datetime.now() - datetime.fromisoformat(
+            entri["waktu"] or entri["t"]) < timedelta(minutes=menit)
     except Exception:
         return False
 
@@ -69,6 +67,35 @@ cfg = json.loads(KONFIGURASI.read_text(encoding="utf-8"))
 m.alat_buka_browser({"url": cfg["url_kursus"]})
 page = m._pastikan_browser()
 
+DIAG = {"konsol": [], "gagal": [], "respons": []}
+page.on("console", lambda msg: DIAG["konsol"].append(
+    f"{msg.type}: {msg.text[:150]}")
+    if msg.type in ("error", "warning") else None)
+page.on("requestfailed", lambda req: DIAG["gagal"].append(
+    f"{req.url[:120]} :: {req.failure}"))
+page.on("response", lambda res: DIAG["respons"].append(
+    f"{res.status} {res.url[:120]}") if res.status >= 400 else None)
+
+
+def catat_diag(halaman, inst):
+    try:
+        cat("  DIAG", inst, "frame:", [x.url[:130] for x in m._semua_frame(halaman)])
+    except Exception:
+        pass
+    try:
+        src = halaman.evaluate("""() => {
+            const f = document.querySelector('iframe.activity-frame');
+            return f ? f.src : '(tidak ada iframe)';
+        }""")
+        cat("  DIAG src:", src[:160])
+    except Exception as e:
+        cat("  DIAG src gagal:", type(e).__name__)
+    cat("  DIAG konsol:", DIAG["konsol"][-4:])
+    cat("  DIAG request gagal:", DIAG["gagal"][-4:])
+    cat("  DIAG respons >=400:", DIAG["respons"][-4:])
+    for k in ("konsol", "gagal", "respons"):
+        DIAG[k].clear()
+
 
 def semua_lti():
     keluar, terlihat = [], set()
@@ -78,19 +105,19 @@ def semua_lti():
                 if a["instance"] in terlihat:
                     continue
                 terlihat.add(a["instance"])
-                keluar.append((nama, a))
+                keluar.append(a)
     return keluar
 
 
 def buka_lti(url):
-    """Buka aktivitas dengan waktu tunggu yang mengikuti kecepatan jaringan."""
+    """Buka aktivitas dengan waktu tunggu mengikuti kecepatan jaringan."""
     halaman = m._pastikan_browser()
     faktor = m._faktor_jaringan(halaman)
-    tunggu = min(60, max(25, int(50 * faktor)))  # detik per percobaan (dibatasi)
-    batas_navigasi = int(45000 * min(2.5, faktor))
+    tunggu = min(60, max(25, int(50 * faktor)))
+    batas = int(45000 * min(2.5, faktor))
     for percobaan in range(2):
         try:
-            halaman.goto(url, wait_until="domcontentloaded", timeout=batas_navigasi)
+            halaman.goto(url, wait_until="domcontentloaded", timeout=batas)
         except Exception:
             pass
         for _ in range(tunggu * 2):
@@ -102,9 +129,6 @@ def buka_lti(url):
             time.sleep(0.5)
         if percobaan == 0:
             cat(f"  faktor jaringan {faktor}: frame belum muncul, muat ulang sekali.")
-            m.status_aktif(f"Jaringan faktor {faktor}; memuat ulang aktivitas")
-    # Sama seperti fungsi utama: kartu "Lihat Aktivitas" kadang perlu diklik
-    # supaya frame /ltiPage benar-benar diluncurkan.
     for x in m._semua_frame(halaman):
         try:
             diklik = x.evaluate("""() => {
@@ -129,7 +153,6 @@ def buka_lti(url):
 
 
 def baca_rating(fr, faktor=1.0):
-    """Baca rating dengan sabar: frame /ltiPage butuh waktu sampai siap."""
     if not fr:
         return [], -1
     ratings = []
@@ -161,148 +184,113 @@ def selesai(status):
     return str(status or "").lower().startswith("completed")
 
 
-def entri_baru(a, ratings, rendah, status, dari_cache=False):
+def entri_baru(a, status, ratings, rendah, perlu=False, kendala="", percobaan=0):
     return {
-        "instance": a["instance"],
-        "url": a["url"],
-        "nama": a["nama"],
+        "instance": a["instance"], "url": a["url"], "nama": a["nama"],
         "pelajaran": a["pelajaran"],
         "waktu": datetime.now().isoformat(timespec="seconds"),
-        "status": status,
-        "ratings": ratings,
-        "rendah": rendah,
-        "perlu": (not selesai(status)) or (frame_gagal(rendah)) or rendah > 0,
-        "dari_cache": dari_cache,
-        "percobaan": 0,
+        "status": status, "ratings": ratings, "rendah": rendah,
+        "perlu": perlu, "kendala": kendala, "percobaan": percobaan,
+        "dari_cache": False,
     }
 
 
-def frame_gagal(rendah):
-    return rendah == -1
-
-
-def tulis_hasil(entri):
+def tulis_hasil(hasil):
     simpan_json(HASIL, {"waktu": datetime.now().isoformat(timespec="seconds"),
-                        "entri": entri})
+                        "entri": hasil})
 
 
-def tahap_scan(paksa):
-    cache = {} if paksa else muat_json(CACHE, {})
-    items = semua_lti()
-    cat("=== TAHAP SCAN ===", "total:", len(items), "| paksa:", paksa,
-        "| faktor jaringan:", m._faktor_jaringan(page))
-    hasil, dilihat, dilewati, terakhir = [], set(), 0, time.time()
-    for i, (nama, a) in enumerate(items, 1):
-        inst = a["instance"]
-        if inst in dilihat:
-            continue
-        dilihat.add(inst)
-        lama = cache.get(inst)
-        if not paksa and masih_segar(lama):
-            e = dict(lama)
-            e.update({
-                "instance": inst, "url": a["url"], "nama": a["nama"],
-                "pelajaran": a["pelajaran"], "dari_cache": True,
-            })
-            hasil.append(e)
-            dilewati += 1
-            continue
-        if time.time() - terakhir > 180:
-            cat("WATCHDOG scan: >3 menit tanpa progres; lanjut ke aktivitas berikutnya.")
-            m.tampilkan_popup("Hermes menemui kendala",
-                              "Scan mandek >3 menit; lanjut ke aktivitas berikutnya.")
-            terakhir = time.time()
-            continue
-        m.status_aktif(f"Memindai rating LTI {i}/{len(items)}: {inst}")
-        try:
-            _, frame, faktor = buka_lti(a["url"])
-            ratings, rendah = baca_rating(frame, faktor)
-            status = m._status_aktivitas_api(m._pastikan_browser(), inst)
-            e = entri_baru(a, ratings, rendah, status)
-            e["percobaan"] = (lama or {}).get("percobaan", 0) or 0
-            e["waktu"] = datetime.now().isoformat(timespec="seconds")
-            hasil.append(e)
-            cache[inst] = e
-            simpan_json(CACHE, cache)
-            tulis_hasil(hasil)   # tulis bertahap: api tersimpan walau bot mati mendadak
-            if len(hasil) % 5 == 0:
-                cat(f"  scan {len(hasil)}/{len(items)} ...")
-            terakhir = time.time()
-        except Exception as ex:
-            cat(f"  {inst}: ERROR scan {type(ex).__name__} {ex}")
-            m.tampilkan_popup("Hermes menemui kendala", f"Scan {inst}: {type(ex).__name__}")
-            e = entri_baru(a, [], -1, None)
-            hasil.append(e)
-            tulis_hasil(hasil)
-    tulis_hasil(hasil)
-    butuh = [e for e in hasil if e["perlu"]]
-    cat(f"Scan selesai: {len(hasil)} entri, {dilewati} dari cache, "
-        f"{len(butuh)} perlu dikerjakan -> {HASIL.name}")
-    return hasil
-
-
-def tahap_kerja(hasil):
-    cache = muat_json(CACHE, {})
-    cat("=== TAHAP KERJA ===", "entri:", len(hasil),
-        "| perlu:", sum(1 for e in hasil if e.get("perlu")))
-    for siklus in range(1, 4):
-        butuh = [e for e in hasil if e["perlu"]]
-        if not butuh:
+def proses_satu(a, i, total):
+    """Scan satu Berkolaborasi, kerjakan bila perlu, lalu kembalikan hasilnya."""
+    inst = a["instance"]
+    m.status_aktif(f"Memindai Berkolaborasi {i}/{total}: {inst}")
+    halaman, frame, faktor = None, None, 1.0
+    for percobaan in range(2):
+        halaman, frame, faktor = buka_lti(a["url"])
+        if frame:
             break
-        cat(f"SIKLUS {siklus}: {len(butuh)} entri perlu dikerjakan")
-        for i, e in enumerate(butuh, 1):
-            inst, url = e["instance"], e["url"]
-            try:
-                m.status_aktif(f"Mengerjakan {i}/{len(butuh)}: {inst} "
-                               f"(status={e['status']}, rating={e['ratings']})")
-                halaman, frame, faktor = buka_lti(url)
-                if not frame:
-                    cat(f"  {inst}: frame tidak termuat, dicoba lagi siklus berikutnya.")
-                    continue
-                hanya_rating = selesai(e["status"]) and (e["rendah"] or 0) > 0
-                hasil_teks = m._selesaikan_lti(halaman, hanya_rating=hanya_rating)
-                cat(f"  {inst}: {(hasil_teks or 'tanpa perubahan')[:300]}")
-                _, frame2, faktor2 = buka_lti(url)
-                ratings2, rendah2 = baca_rating(frame2, faktor2)
-                status2 = m._status_aktivitas_api(m._pastikan_browser(), inst)
-                e.update({
-                    "waktu": datetime.now().isoformat(timespec="seconds"),
-                    "status": status2, "ratings": ratings2, "rendah": rendah2,
-                    "perlu": (not selesai(status2)) or rendah2 != 0,
-                    "percobaan": (e.get("percobaan") or 0) + 1,
-                    "dari_cache": False,
-                })
-                cache[inst] = dict(e)
-                simpan_json(CACHE, cache)
-                tulis_hasil(hasil)
-                m.status_aktif(f"Hasil {inst}: status={status2}, rating={ratings2}")
-            except Exception as ex:
-                cat(f"  {inst}: ERROR kerja {type(ex).__name__} {ex}")
-                m.tampilkan_popup("Hermes menemui kendala", f"{inst}: {type(ex).__name__}")
-                e["perlu"] = True
-    sisa = [e["instance"] for e in hasil if e["perlu"]]
-    if sisa:
-        cat("SISA SETELAH 3 SIKLUS:", ", ".join(sisa))
+        m.tampilkan_popup("Hermes menemui kendala",
+                          f"{inst}: frame belum muncul, mencoba lagi")
+    if not frame:
+        cat(f"[{i}/{total}] {inst}: frame /ltiPage tidak termuat.")
+        catat_diag(m._pastikan_browser(), inst)
+        return entri_baru(a, None, [], -1, kendala="frame tidak termuat"), False
+
+    ratings, rendah = baca_rating(frame, faktor)
+    status = m._status_aktivitas_api(m._pastikan_browser(), inst)
+    cat(f"[{i}/{total}] {inst} status={status} rating={ratings} rendah={rendah}")
+
+    if selesai(status) and rendah == 0:
+        return entri_baru(a, status, ratings, rendah), False
+
+    hanya_rating = selesai(status) and rendah > 0
+    if rendah < 0:
+        kendala = "rating tidak terbaca"
+        cat(f"  {inst}: rating tidak terbaca; coba perbaikan rating.")
     else:
-        cat("SEMUA BERKOLABORASI LULUS DAN RATING 5/5.")
+        kendala = ""
+    label = "rating" if hanya_rating or rendah < 0 else "kartu"
+    m.status_aktif(f"Mengerjakan {i}/{total}: {inst} ({label})")
+    try:
+        teks = m._selesaikan_lti(halaman, hanya_rating=hanya_rating or rendah < 0)
+        cat(f"  {inst}: {(teks or 'tanpa perubahan')[:280]}")
+    except Exception as e:
+        cat(f"  {inst}: ERROR kerja {type(e).__name__} {e}")
+        m.tampilkan_popup("Hermes menemui kendala", f"{inst}: {type(e).__name__}")
+        return entri_baru(a, status, ratings, rendah, perlu=True,
+                          kendala=f"error {type(e).__name__}"), False
+
+    _, frame2, faktor2 = buka_lti(a["url"])
+    ratings2, rendah2 = baca_rating(frame2, faktor2)
+    status2 = m._status_aktivitas_api(m._pastikan_browser(), inst)
+    if not frame2:
+        kendala = "frame hilang setelah dikerjakan"
+    cat(f"  {inst}: sesudah status={status2} rating={ratings2}")
+    m.status_aktif(f"Hasil {inst}: status={status2}, rating={ratings2}")
+    perlu = (not selesai(status2)) or rendah2 != 0
+    return entri_baru(a, status2, ratings2, rendah2, perlu=perlu,
+                      kendala=kendala, percobaan=1), True
 
 
 def jalankan():
     paksa = "--paksa" in sys.argv
-    if "--kerja" in sys.argv:
-        dat = muat_json(HASIL, {})
-        hasil = dat.get("entri") if isinstance(dat, dict) else dat
-        if not isinstance(hasil, list) or not hasil:
-            cat("Belum ada hasil scan. Jalankan scan dulu.")
-            return
-        cat("Memakai hasil scan tersimpan:", dat.get("waktu", "?"))
-    else:
-        hasil = tahap_scan(paksa)
-        if "--scan-saja" in sys.argv:
-            cat("Hasil scan tersimpan di", HASIL.name,
-                "- jalankan dengan --kerja untuk memprosesnya.")
-            return
-    tahap_kerja(hasil)
+    cache = {} if paksa else muat_json(CACHE, {})
+    items = semua_lti()
+    cat("=== SCAN + KERJA PER AKTIVITAS ===", "total:", len(items),
+        "| paksa:", paksa, "| faktor jaringan:", m._faktor_jaringan(page))
+    hasil, gagal_berturut = [], 0
+    for i, a in enumerate(items, 1):
+        inst = a["instance"]
+        lama = None if paksa else cache.get(inst)
+        if masih_segar(lama):
+            e = dict(lama)
+            e.update({"instance": inst, "url": a["url"], "nama": a["nama"],
+                      "pelajaran": a["pelajaran"], "dari_cache": True})
+            hasil.append(e)
+            tulis_hasil(hasil)
+            cat(f"[{i}/{len(items)}] {inst}: dilewati (cache masih segar).")
+            gagal_berturut = 0
+            continue
+        e, bekerja = proses_satu(a, i, len(items))
+        hasil.append(e)
+        cache[inst] = dict(e)
+        simpan_json(CACHE, cache)
+        tulis_hasil(hasil)
+        if e.get("kendala") and "frame" in e["kendala"]:
+            gagal_berturut += 1
+        else:
+            gagal_berturut = 0
+        if gagal_berturut >= 3:
+            cat("HENTI: 3 aktivitas berturut-turut gagal memuat frame. "
+                "Kemungkinan sesi LMS habis atau launch dibatasi. "
+                "Silakan login ulang di browser lalu jalankan dengan --paksa.")
+            m.tampilkan_popup("Hermes menemui kendala",
+                              "Frame LTI gagal 3x berturut. Perlu login ulang.")
+            break
+    perlu = [e for e in hasil if e.get("perlu")]
+    kendala = [e for e in hasil if e.get("kendala")]
+    cat("SELESAI:", len(hasil), "aktivitas |", len(perlu), "perlu ditindaklanjuti |",
+        len(kendala), "kendala | hasil:", HASIL.name)
 
 
 if __name__ == "__main__":
