@@ -5376,6 +5376,14 @@ def _selesaikan_lti(page, hanya_rating=False):
                     time.sleep(2.5)
                     jepret("tile-mengulang")
                 else:
+                    # Tombol bisa berada di bawah lipatan halaman, jadi scroll
+                    # dulu sampai bawah sebelum mencari/mengkliknya.
+                    frame.evaluate("""() => {
+                        window.scrollTo(0, document.body.scrollHeight);
+                        const e = document.scrollingElement;
+                        if (e) e.scrollTop = e.scrollHeight;
+                    }""")
+                    time.sleep(0.8)
                     # Hasil OCR tile-detail: yang tampil bukan tombol "Mengulang",
                     # melainkan daftar "Lihat Aktivitas". Klik salah satu untuk
                     # membuka kembali refleksi aktivitas yang ratingnya rendah.
@@ -5394,6 +5402,12 @@ def _selesaikan_lti(page, hanya_rating=False):
                         jepret("tile-lihat-aktivitas")
                         time.sleep(3)
                         frame = ambil_frame() or frame
+                        frame.evaluate("""() => {
+                            window.scrollTo(0, document.body.scrollHeight);
+                            const e = document.scrollingElement;
+                            if (e) e.scrollTop = e.scrollHeight;
+                        }""")
+                        time.sleep(0.8)
                         # Detail aktivitas menampilkan tombol "Cobalah Latihan"
                         # untuk masuk ke refleksi/penilaian ulang.
                         latihan = frame.evaluate("""() => {
@@ -5402,6 +5416,7 @@ def _selesaikan_lti(page, hanya_rating=False):
                                          /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
                             if (!e) return '';
                             const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                            e.scrollIntoView({block:'center'});
                             (e.closest('button, a') || e).click();
                             return teks;
                         }""")
@@ -5412,6 +5427,33 @@ def _selesaikan_lti(page, hanya_rating=False):
                             frame = ambil_frame() or frame
                     else:
                         catatan.append("tidak ada tombol Mengulang/Lihat Aktivitas")
+
+                # Halaman langkap aktivitas diakhiri tombol
+                # "Sudah menyelesaikan aktivitasnya? Refleksikan aktivitasnya".
+                # Scroll dulu, lalu klik supaya sesi penilaian benar-benar mulai.
+                frame.evaluate("""() => {
+                    for (let i = 0; i < 4; i++) {
+                        window.scrollTo(0, document.body.scrollHeight);
+                        const e = document.scrollingElement;
+                        if (e) e.scrollTop = e.scrollHeight;
+                    }
+                }""")
+                time.sleep(1)
+                refleksi_mulai = frame.evaluate("""() => {
+                    const e=[...document.querySelectorAll('button, a, div, span')]
+                      .find(x => x.getBoundingClientRect().width > 0 &&
+                                 /Refleksikan aktivitasnya/i.test(x.innerText || ''));
+                    if (!e) return '';
+                    e.scrollIntoView({block:'center'});
+                    const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                    (e.closest('button, a') || e).click();
+                    return teks;
+                }""")
+                if refleksi_mulai:
+                    catatan.append("klik " + refleksi_mulai)
+                    jepret("tile-refleksikan")
+                    time.sleep(3)
+                    frame = ambil_frame() or frame
 
                 for _langkah in range(50):
                     _tunggu_jika_dijeda()
