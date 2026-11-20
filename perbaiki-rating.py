@@ -115,14 +115,44 @@ def semua_lti():
     return keluar
 
 
-def buka_lti(url):
-    """Tunggu launch LTI sampai selesai.
+def cari_frame_lti():
+    """Cari frame /ltiPage di halaman aktif DAN di tab lain."""
+    try:
+        daftar = list(m._browser.pages) if getattr(m, "_browser", None) else []
+    except Exception:
+        daftar = []
+    if not daftar:
+        daftar = [m._pastikan_browser()]
+    for p in daftar:
+        fr = next((x for x in m._semua_frame(p) if "/ltiPage" in (x.url or "")), None)
+        if fr:
+            return p, fr
+    return None, None
 
-    Penting: jangan memuat ulang saat baru lewat batas pendek. Percobaan
-    sebelumnya mengirim OIDC ke api.opportunity dan dibatalkan (ERR_ABORTED)
-    setiap kali halaman di-reload, jadi launch tidak pernah selesai.
-    Sekarang: satu navigasi, tunggu panjang, reload hanya bila benar mandek.
-    """
+
+def klik_aktivitas(halaman):
+    """Klik aktivitas seperti manusia (bukan sekadar goto/JS click)."""
+    pilihan = [
+        '.toc__is_active .activity-name-section',
+        '.toc-act-container .activity-name-section',
+        '.activity-name-section:has-text("Berkolaborasi")',
+        '.activity-card:has-text("Berkolaborasi")',
+        'text=Berkolaborasi',
+    ]
+    for selector in pilihan:
+        try:
+            loc = halaman.locator(selector).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=8000)
+                cat("  klik aktivitas lewat:", selector)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def buka_lti(url):
+    """Buka aktivitas dengan klik asli, lalu tunggu frame /ltiPage."""
     halaman = m._pastikan_browser()
     faktor = m._faktor_jaringan(halaman)
     inst = url.rsplit("/", 1)[-1]
@@ -131,15 +161,16 @@ def buka_lti(url):
         halaman.goto(url, wait_until="domcontentloaded", timeout=batas_navigasi)
     except Exception:
         pass
+    time.sleep(4)
+    klik_aktivitas(halaman)
 
-    batas_tunggu = int(360 * min(2.0, max(1.0, faktor)))  # 6-12 menit
+    batas_tunggu = int(180 * min(1.5, max(1.0, faktor)))
     terakhir_berubah = time.time()
     sebelumnya, sudah_reload = None, False
     for detik in range(batas_tunggu):
-        halaman = m._pastikan_browser()
-        fr = next((x for x in m._semua_frame(halaman)
-                   if "/ltiPage" in (x.url or "")), None)
+        p, fr = cari_frame_lti()
         if fr:
+            halaman = p
             return halaman, fr, faktor
         urls = [x.url or "" for x in m._semua_frame(halaman)]
         if urls != sebelumnya:
@@ -172,11 +203,10 @@ def buka_lti(url):
         except Exception:
             diklik = False
         if diklik:
-            for _ in range(180):
-                fr = next((y for y in m._semua_frame(m._pastikan_browser())
-                           if "/ltiPage" in (y.url or "")), None)
+            for _ in range(120):
+                p, fr = cari_frame_lti()
                 if fr:
-                    return m._pastikan_browser(), fr, faktor
+                    return p, fr, faktor
                 time.sleep(1)
             break
     return halaman, None, faktor
