@@ -110,25 +110,49 @@ def semua_lti():
 
 
 def buka_lti(url):
-    """Buka aktivitas dengan waktu tunggu mengikuti kecepatan jaringan."""
+    """Tunggu launch LTI sampai selesai.
+
+    Penting: jangan memuat ulang saat baru lewat batas pendek. Percobaan
+    sebelumnya mengirim OIDC ke api.opportunity dan dibatalkan (ERR_ABORTED)
+    setiap kali halaman di-reload, jadi launch tidak pernah selesai.
+    Sekarang: satu navigasi, tunggu panjang, reload hanya bila benar mandek.
+    """
     halaman = m._pastikan_browser()
     faktor = m._faktor_jaringan(halaman)
-    tunggu = min(60, max(25, int(50 * faktor)))
-    batas = int(45000 * min(2.5, faktor))
-    for percobaan in range(2):
-        try:
-            halaman.goto(url, wait_until="domcontentloaded", timeout=batas)
-        except Exception:
-            pass
-        for _ in range(tunggu * 2):
-            halaman = m._pastikan_browser()
-            fr = next((x for x in m._semua_frame(halaman)
-                       if "/ltiPage" in (x.url or "")), None)
-            if fr:
-                return halaman, fr, faktor
-            time.sleep(0.5)
-        if percobaan == 0:
-            cat(f"  faktor jaringan {faktor}: frame belum muncul, muat ulang sekali.")
+    inst = url.rsplit("/", 1)[-1]
+    batas_navigasi = int(60000 * min(2.5, faktor))
+    try:
+        halaman.goto(url, wait_until="domcontentloaded", timeout=batas_navigasi)
+    except Exception:
+        pass
+
+    batas_tunggu = int(360 * min(2.0, max(1.0, faktor)))  # 6-12 menit
+    terakhir_berubah = time.time()
+    sebelumnya, sudah_reload = None, False
+    for detik in range(batas_tunggu):
+        halaman = m._pastikan_browser()
+        fr = next((x for x in m._semua_frame(halaman)
+                   if "/ltiPage" in (x.url or "")), None)
+        if fr:
+            return halaman, fr, faktor
+        urls = [x.url or "" for x in m._semua_frame(halaman)]
+        if urls != sebelumnya:
+            sebelumnya = urls
+            terakhir_berubah = time.time()
+            cat(f"  LTI {inst} detik {detik}: {[u[:95] for u in urls]}")
+        if detik and detik % 60 == 0:
+            cat(f"  LTI {inst}: masih menunggu frame ({detik}s)")
+            m.status_aktif(f"Menunggu LTI {inst} ({detik}s, faktor {faktor})")
+        if time.time() - terakhir_berubah > 180 and not sudah_reload:
+            cat(f"  LTI {inst}: launch mandek 180s, muat ulang sekali.")
+            sudah_reload = True
+            try:
+                halaman.goto(url, wait_until="domcontentloaded",
+                             timeout=batas_navigasi)
+            except Exception:
+                pass
+            terakhir_berubah = time.time()
+        time.sleep(1)
     for x in m._semua_frame(halaman):
         try:
             diklik = x.evaluate("""() => {
@@ -142,12 +166,12 @@ def buka_lti(url):
         except Exception:
             diklik = False
         if diklik:
-            for _ in range(tunggu * 2):
+            for _ in range(180):
                 fr = next((y for y in m._semua_frame(m._pastikan_browser())
                            if "/ltiPage" in (y.url or "")), None)
                 if fr:
                     return m._pastikan_browser(), fr, faktor
-                time.sleep(0.5)
+                time.sleep(1)
             break
     return halaman, None, faktor
 
@@ -204,14 +228,10 @@ def proses_satu(a, i, total):
     """Scan satu Berkolaborasi, kerjakan bila perlu, lalu kembalikan hasilnya."""
     inst = a["instance"]
     m.status_aktif(f"Memindai Berkolaborasi {i}/{total}: {inst}")
-    halaman, frame, faktor = None, None, 1.0
-    for percobaan in range(2):
-        halaman, frame, faktor = buka_lti(a["url"])
-        if frame:
-            break
-        m.tampilkan_popup("Hermes menemui kendala",
-                          f"{inst}: frame belum muncul, mencoba lagi")
+    halaman, frame, faktor = buka_lti(a["url"])
     if not frame:
+        m.tampilkan_popup("Hermes menemui kendala",
+                          f"{inst}: frame belum muncul setelah ditunggu lama")
         cat(f"[{i}/{total}] {inst}: frame /ltiPage tidak termuat.")
         catat_diag(m._pastikan_browser(), inst)
         return entri_baru(a, None, [], -1, kendala="frame tidak termuat"), False
