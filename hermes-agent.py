@@ -5179,7 +5179,7 @@ def _selesaikan_lti(page, hanya_rating=False):
         }""")
 
     def rating_angka(teks):
-        mm = re.match(r"^\\s*(\\d+)\\s*/\\s*5\\s*$", str(teks or ""))
+        mm = re.search(r"(\d+)\s*/\s*5", str(teks or ""))
         return int(mm.group(1)) if mm else None
 
     def tunggu_kembali(fr, detik=75):
