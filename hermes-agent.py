@@ -5394,6 +5394,22 @@ def _selesaikan_lti(page, hanya_rating=False):
                         jepret("tile-lihat-aktivitas")
                         time.sleep(3)
                         frame = ambil_frame() or frame
+                        # Detail aktivitas menampilkan tombol "Cobalah Latihan"
+                        # untuk masuk ke refleksi/penilaian ulang.
+                        latihan = frame.evaluate("""() => {
+                            const e=[...document.querySelectorAll('button, a, div, span')]
+                              .find(x => x.getBoundingClientRect().width > 0 &&
+                                         /Cobalah Latihan|Coba Latihan/i.test(x.innerText || ''));
+                            if (!e) return '';
+                            const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                            (e.closest('button, a') || e).click();
+                            return teks;
+                        }""")
+                        if latihan:
+                            catatan.append("klik " + latihan)
+                            jepret("tile-cobalah-latihan")
+                            time.sleep(4)
+                            frame = ambil_frame() or frame
                     else:
                         catatan.append("tidak ada tombol Mengulang/Lihat Aktivitas")
 
