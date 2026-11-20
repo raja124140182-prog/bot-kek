@@ -5542,9 +5542,38 @@ def _selesaikan_lti(page, hanya_rating=False):
                         akhir = ""
                     catatan.append("tombol Refleksikan aktivitasnya TIDAK ditemukan | " + akhir)
 
+                ulangan = 0
                 for _langkah in range(50):
                     _tunggu_jika_dijeda()
                     frame = ambil_frame() or frame
+
+                    # Halaman hasil penilaian lama menampilkan "Skor Anda ..."
+                    # dan tombol "Mengulang". Sesuai alur yang dikonfirmasi
+                    # pengguna: tekan Mengulang DULU, baru scroll ke bawah
+                    # supaya pertanyaan/button baru muncul.
+                    try:
+                        ulang = frame.evaluate("""() => {
+                            const e=[...document.querySelectorAll('button, a, div, span')]
+                              .find(x => x.getBoundingClientRect().width > 0 &&
+                                         /Mengulang/i.test(x.innerText || ''));
+                            if (!e) return '';
+                            const teks=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                            e.scrollIntoView({block:'center'});
+                            (e.closest('button, a') || e).click();
+                            return teks;
+                        }""")
+                    except Exception:
+                        ulang = ""
+                    if ulang and ulangan < 3:
+                        ulangan += 1
+                        catatan.append(f"klik {ulang} (skor lama, ke-{ulangan})")
+                        jepret("tile-mengulang")
+                        status_aktif(f"{kunci}: mengulang penilaian ({ulangan}/3)")
+                        gulir(frame)
+                        time.sleep(3)
+                        frame = ambil_frame() or frame
+                        continue
+
                     info = info_refleksi(frame)
                     if info["opsi"]:
                         pilihan = pilih_opsi(frame, konteks, info["pertanyaan"],
@@ -5579,7 +5608,18 @@ def _selesaikan_lti(page, hanya_rating=False):
                         continue
                     # Umpan balik GenAI sering baru selesai setelah >20 detik.
                     time.sleep(20)
-                    break
+                    # Kalau halaman hasil masih memuat tombol Mengulang dan
+                    # kuota belum habis, jangan keluar. Putaran atas akan
+                    # menekannya, lalu refleksi diisi ulang dengan jawaban
+                    # yang sudah memuat hasil konkret.
+                    try:
+                        masih_ulang = frame.evaluate("""() => [...document.querySelectorAll('button, a, div, span')]
+                            .some(x => x.getBoundingClientRect().width > 0 &&
+                                       /Mengulang/i.test(x.innerText || ''))""")
+                    except Exception:
+                        masih_ulang = False
+                    if not (masih_ulang and ulangan < 3):
+                        break
 
                 jepret("tile-selesai")
                 perbaikan += 1
